@@ -8,7 +8,7 @@
 source: measured
 
 paths:
-  db:                "external_data/Source/LIBS_data_vacuum.db"
+  db:                "external_data/Source/LIBS_data.db"
   sample_matrix:     "external_data/Source/Samples_Fe_matrix.xlsx"
   wavelength_json:   "external_data/Data/VASKUT K8.json"
   measured_json_root: "/home/LIBS/prochazka/data/Running_projects/24_0011_CF_spark/CF SPARK/Data/Chameleon_OptiCal_DB_Calibration_Data_Fe_20211126"

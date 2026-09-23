@@ -1,7 +1,7 @@
 # Fast smoke settings for line-token pipeline (fewer lines, same physics)
 
 line_dictionary:
-  db_path: external_data/Source/LIBS_data_vacuum.db
+  db_path: external_data/Source/LIBS_data.db
   te_range: [6500.0, 11000.0]
   ne_range: [1.0e17, 5.0e17]
   n_grid:

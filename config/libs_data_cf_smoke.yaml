@@ -3,7 +3,7 @@
 # Coarser fine_step_nm than config/libs_data.yaml for speed; everything else
 # mirrors the full config. Cache: synthetic_cache_<key>.h5 (new key).
 paths:
-  db:                "external_data/Source/LIBS_data_vacuum.db"
+  db:                "external_data/Source/LIBS_data.db"
   sample_matrix:     "external_data/Source/Samples_Fe_matrix.xlsx"
   wavelength_json:   "external_data/Data/VASKUT K8.json"
   cache_dir:         "external_data/cache"

@@ -62,6 +62,35 @@ _VOIGT_NORM = 1.0 / (_SIGMA_FIT * np.sqrt(2 * np.pi))
 
 # Element-name filters (upstream conventions)
 _EXCLUDED_ELEMENTS = {"", "n", "r"}
+# LIBS_data.db (air wavelengths) also carries rows under pseudo-elements such as
+# "Al-II" / "Mn-II" plus "", "n", "r"; only plain chemical symbols are elements.
+_ELEMENT_SYMBOL_RE = re.compile(r"[A-Z][a-z]?")
+
+# Line DB whose cache keys predate the `line_db` key; other DBs (e.g. the air-wavelength
+# LIBS_data.db) are added to every spectra cache key so their caches never collide.
+LEGACY_LINE_DB = "LIBS_data_vacuum.db"
+
+
+def is_element_symbol(name: Any) -> bool:
+    """True for a plain chemical symbol ("Fe"), False for DB artefacts ("Al-II", "", "n")."""
+    s = str(name).strip() if name is not None else ""
+    return s not in _EXCLUDED_ELEMENTS and bool(_ELEMENT_SYMBOL_RE.fullmatch(s))
+
+
+_line_db_md5_cache: dict[tuple[str, int, int], str] = {}
+
+
+def line_db_cache_key(db_path: str) -> dict[str, str]:
+    """Cache-key entry identifying the line DB by name and content (edits to the DB file
+    invalidate caches); empty for the legacy vacuum DB so existing hashes stay valid."""
+    p = Path(db_path)
+    if p.name == LEGACY_LINE_DB:
+        return {}
+    st = p.stat()
+    sig = (str(p.resolve()), st.st_size, st.st_mtime_ns)
+    if sig not in _line_db_md5_cache:
+        _line_db_md5_cache[sig] = hashlib.md5(p.read_bytes()).hexdigest()[:12]
+    return {"line_db": p.name, "line_db_md5": _line_db_md5_cache[sig]}
 
 # Plasma-state columns written by data/two_zone_pipeline.py (physics_version 2).
 # They are metadata, never element concentrations. ``Te``/``Ne`` stay as the
@@ -140,6 +169,10 @@ def _load_partf(element: str, db_path: str):
                 gi_I.append(gi); Ei_I.append(Ei)
             elif ion_state == "II":
                 gi_II.append(gi); Ei_II.append(Ei)
+        if element == "H" and not gi_II:
+            # H II is a bare proton: U_II = 1. PartF_var has no level for it, and U_II = 0
+            # would make the Saha ratio vanish (hydrogen treated as fully neutral).
+            gi_II.append(1.0); Ei_II.append(0.0)
         _partf_cache[element] = (
             np.array(gi_I, dtype=np.float64),
             np.array(Ei_I, dtype=np.float64),
@@ -291,12 +324,7 @@ def _db_elements(db_path: str) -> set[str]:
     with sqlite3.connect(db_path) as conn:
         cur = conn.cursor()
         cur.execute("SELECT DISTINCT Elem_name FROM QuantParam")
-        return {
-            str(r[0]).strip()
-            for r in cur.fetchall()
-            if r[0] is not None and str(r[0]).strip() not in _EXCLUDED_ELEMENTS
-            and "-II" not in str(r[0])
-        }
+        return {str(r[0]).strip() for r in cur.fetchall() if is_element_symbol(r[0])}
 
 
 def _normalize_sample_id(name: str, row: int) -> str:
@@ -570,6 +598,7 @@ class SyntheticLIBSDataset(Dataset):
             "wavelength_first": float(self.wavelength[0]),
             "wavelength_last": float(self.wavelength[-1]),
             "seed": self.seed,
+            **line_db_cache_key(self.db_path),
         }
         return hashlib.md5(json.dumps(cfg, sort_keys=True, default=str).encode()).hexdigest()[:12]
 

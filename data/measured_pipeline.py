@@ -24,6 +24,7 @@ from data.libs_pipeline import (
     _db_elements,
     _normalize_sample_id,
     compute_ccd_wavelengths,
+    line_db_cache_key,
     load_spectra_cache,
     load_wavelength,
     save_spectra_cache,
@@ -346,6 +347,8 @@ class MeasuredLIBSDataset(Dataset):
             "wavelength_last": float(self.wavelength[-1]),
             "seed": self.seed,
             "max_files": self.max_files,
+            # The DB decides which element columns the cached sample table keeps.
+            **line_db_cache_key(self.db_path),
         }
         return hashlib.md5(
             json.dumps(cfg, sort_keys=True, default=str).encode(),
