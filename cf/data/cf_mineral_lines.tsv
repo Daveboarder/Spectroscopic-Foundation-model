@@ -1,0 +1,152 @@
+# Curated calibration-free line list for REE minerals measured by LIBS in air (LIGHTIGO
+# spectrometer, 188.6-859.1 nm).  Standard LIBS / ICP-OES analytical lines of the matrix,
+# volatile, ambient-air and rare-earth elements, each matched to external_data/Source/LIBS_data.db
+# (element, stage, |dlambda| <= 0.02 nm; strongest gk*Ak on ties).  All values are copied from
+# that DB: AIR wavelengths [nm], energies [eV], Ak [1/s].  Forced into the cf_isolated line
+# dictionary (config/line_embedding_cf*.yaml, flagged forced=1); isolation_score and the CF
+# weights decide how much each line is trusted.  Resonance lines are kept but flagged: they are
+# the most sensitive lines of trace elements but self-absorb at major concentrations.
+# Candidates NOT in LIBS_data.db (add them to the DB to use them): La II 333.749, Ce II 413.380,
+# Ce II 418.660, Pr II 390.844, Sm II 442.434, Sm II 443.432, Gd II 335.047, 342.247, 364.619,
+# 376.839, Ho II 345.600, 381.073.  Replaces cf_oes_lines_54.tsv (steel, vacuum) for this project.
+Elem_name	ion.state	Wl	Ei	Ek	Ak	gi	gk	comment
+Al	I	308.2150	0	4.02148	5.87e+07	2	4	resonance (lower level 0 eV): self-absorption prone
+Al	I	309.2710	0.0138938	4.02165	7.29e+07	4	6	analytical line
+Al	I	394.4010	0	3.14272	4.99e+07	2	2	resonance (lower level 0 eV): self-absorption prone
+Al	I	396.1520	0.0138938	3.14272	9.85e+07	4	2	analytical line
+As	I	228.8120	1.35324	6.77019	2.8e+08	6	4	analytical line
+As	I	234.9840	1.3133	6.58797	3.1e+08	4	2	analytical line
+Ba	II	455.4030	0	2.72175	1.11e+08	2	4	resonance (lower level 0 eV): self-absorption prone
+Ba	II	493.4080	0	2.51211	9.53e+07	2	2	resonance (lower level 0 eV): self-absorption prone
+Ba	II	614.1710	0.703586	2.72175	4.12e+07	6	4	analytical line
+Be	I	234.8600	0	5.27744	5.52e+08	1	3	resonance (lower level 0 eV): self-absorption prone
+Be	II	313.0420	0	3.95947	1.129e+08	2	4	resonance (lower level 0 eV): self-absorption prone
+Be	II	313.1070	0	3.95866	1.128e+08	2	2	resonance (lower level 0 eV): self-absorption prone
+Bi	I	306.7700	0	4.04042	1.67e+08	4	2	resonance (lower level 0 eV): self-absorption prone
+C	I	193.0910	1.26373	7.68477	3.39e+08	5	3	analytical line
+C	I	247.8560	2.68401	7.68477	2.8e+07	1	3	analytical line
+Ca	I	422.6730	0	2.93251	2.18e+08	1	3	resonance (lower level 0 eV): self-absorption prone
+Ca	I	430.2530	1.89893	4.77978	1.36e+08	5	5	analytical line
+Ca	I	443.4960	1.88581	4.68063	6.7e+07	3	5	analytical line
+Ca	I	445.4780	1.89893	4.68133	8.7e+07	5	7	analytical line
+Ca	I	616.2170	1.89893	3.9104	4.77e+07	5	3	analytical line
+Ca	II	315.8870	3.12335	7.04717	3.1e+08	2	4	analytical line
+Ca	II	317.9330	3.15098	7.04955	3.6e+08	4	6	analytical line
+Ca	II	393.3660	0	3.15098	1.47e+08	2	4	resonance (lower level 0 eV): self-absorption prone
+Ca	II	396.8470	0	3.12335	1.4e+08	2	2	resonance (lower level 0 eV): self-absorption prone
+Ce	II	407.5710	0.700679	3.74186	4.87e+07	12	14	analytical line
+Ce	II	413.7650	0.516462	3.51211	8.2e+07	10	12	analytical line
+Ce	II	446.0210	0.477837	3.25684	8e+07	8	8	analytical line
+Ce	II	456.2360	0.477837	3.19462	5.18e+07	8	10	analytical line
+Cl	I	837.5940	8.9217	10.4015	2.8e+07	6	8	analytical line
+Dy	II	353.1700	0	3.5096	1.56e+08	18	20	resonance (lower level 0 eV): self-absorption prone
+Dy	II	364.5400	0.102698	3.50285	6.2e+07	16	18	analytical line
+Dy	II	394.4680	0	3.14218	3.07e+07	18	18	resonance (lower level 0 eV): self-absorption prone
+Dy	II	400.0450	0.102698	3.20108	2.54e+07	16	18	analytical line
+Er	II	337.2710	0	3.675	1.3e+08	14	16	resonance (lower level 0 eV): self-absorption prone
+Er	II	349.9100	0.0546069	3.59691	7.5e+07	12	10	analytical line
+Er	II	369.2650	0.0546069	3.41125	4.8e+07	12	14	analytical line
+Er	II	390.6310	0	3.17305	3.23e+07	14	12	resonance (lower level 0 eV): self-absorption prone
+Eu	I	459.4030	0	2.69805	1.61e+08	8	10	resonance (lower level 0 eV): self-absorption prone
+Eu	I	462.7220	0	2.6787	1.56e+08	8	8	resonance (lower level 0 eV): self-absorption prone
+Eu	II	381.9670	0	3.24502	1.27e+08	9	11	resonance (lower level 0 eV): self-absorption prone
+Eu	II	412.9700	0	3.00139	6.8e+07	9	9	resonance (lower level 0 eV): self-absorption prone
+Eu	II	420.5050	0	2.94764	7.1e+07	9	7	resonance (lower level 0 eV): self-absorption prone
+F	I	685.6030	12.6967	14.5046	4.87e+07	6	8	analytical line
+F	I	690.2470	12.7308	14.5265	3.51e+07	4	6	analytical line
+F	I	739.8690	12.6967	14.372	3.53e+07	6	6	analytical line
+Fe	I	371.9930	0	3.33202	1.62e+07	9	11	resonance (lower level 0 eV): self-absorption prone
+Fe	I	373.4860	0.858996	4.1777	9.01e+07	11	11	analytical line
+Fe	I	374.5560	0.0872857	3.39651	1.15e+07	5	7	analytical line
+Fe	I	404.5810	1.48486	4.54851	8.62e+07	9	9	analytical line
+Fe	I	438.3540	1.48486	4.31247	5e+07	9	11	analytical line
+Fe	II	238.2040	0	5.20338	3.13e+08	10	12	resonance (lower level 0 eV): self-absorption prone
+Fe	II	259.9400	0	4.76831	2.35e+08	10	10	resonance (lower level 0 eV): self-absorption prone
+H	I	486.1350	10.1988	12.7485	8.419e+06	8	32	analytical line
+H	I	656.2790	10.1988	12.0875	4.41e+07	8	18	analytical line
+Ho	II	389.1020	0.079028	3.26461	6.99e+07	15	17	analytical line
+K	I	766.4900	0	1.61711	3.779e+07	2	4	resonance (lower level 0 eV): self-absorption prone
+K	I	769.8960	0	1.60996	3.734e+07	2	2	resonance (lower level 0 eV): self-absorption prone
+La	II	379.0830	0.12598	3.39569	9.9e+07	7	5	analytical line
+La	II	379.4780	0.244336	3.51064	1.07e+08	9	7	analytical line
+La	II	394.9100	0.402992	3.54166	1.47e+08	7	9	analytical line
+La	II	398.8520	0.402992	3.51064	9.7e+07	7	7	analytical line
+La	II	408.6720	0	3.03298	6.8e+07	5	5	resonance (lower level 0 eV): self-absorption prone
+La	II	412.3230	0.321317	3.32745	7.5e+07	5	7	analytical line
+La	II	433.3740	0.172891	3.03298	6.2e+07	5	5	analytical line
+Lu	I	451.8570	0	2.74312	2.26e+07	4	4	resonance (lower level 0 eV): self-absorption prone
+Lu	II	261.5420	0	4.73911	4.53e+08	1	3	resonance (lower level 0 eV): self-absorption prone
+Lu	II	291.1390	1.76046	6.0178	2.42e+08	7	9	analytical line
+Mg	I	285.2130	0	4.3458	4.91e+08	1	3	resonance (lower level 0 eV): self-absorption prone
+Mg	I	383.8290	2.71664	5.94591	4.03e+07	5	5	analytical line
+Mg	I	516.7320	2.7091	5.10783	1.13e+07	1	3	analytical line
+Mg	I	517.2680	2.71159	5.10783	3.37e+07	3	3	analytical line
+Mg	I	518.3600	2.71664	5.10783	5.61e+07	5	3	analytical line
+Mg	II	279.5530	0	4.43378	2.6e+08	2	4	resonance (lower level 0 eV): self-absorption prone
+Mg	II	280.2700	0	4.42243	2.57e+08	2	2	resonance (lower level 0 eV): self-absorption prone
+Mn	I	403.0760	0	3.07509	1.7e+07	6	8	resonance (lower level 0 eV): self-absorption prone
+Mn	I	403.3070	0	3.07333	1.65e+07	6	6	resonance (lower level 0 eV): self-absorption prone
+Mn	I	403.4490	0	3.07224	1.58e+07	6	4	resonance (lower level 0 eV): self-absorption prone
+Mn	II	257.6100	0	4.81142	2.8e+08	7	9	resonance (lower level 0 eV): self-absorption prone
+Mn	II	259.3720	0	4.77874	2.76e+08	7	7	resonance (lower level 0 eV): self-absorption prone
+N	I	742.3640	10.3259	11.9956	5.64e+06	2	4	analytical line
+N	I	744.2290	10.3301	11.9956	1.19e+07	4	4	analytical line
+N	I	746.8310	10.3359	11.9956	1.96e+07	6	4	analytical line
+Na	I	588.9950	0	2.10443	6.16e+07	2	4	resonance (lower level 0 eV): self-absorption prone
+Na	I	589.5920	0	2.1023	6.14e+07	2	2	resonance (lower level 0 eV): self-absorption prone
+Na	I	818.3260	2.1023	3.61698	4.29e+07	2	4	analytical line
+Na	I	819.4820	2.10443	3.61697	5.14e+07	4	6	analytical line
+Nd	II	401.2250	0.630539	3.71981	1.34e+08	18	20	analytical line
+Nd	II	406.1080	0.471379	3.5235	8e+07	16	18	analytical line
+Nd	II	410.9450	0.320556	3.33676	5.5e+07	14	16	analytical line
+Nd	II	430.3570	0	2.88015	4.37e+07	8	10	resonance (lower level 0 eV): self-absorption prone
+O	I	777.1940	9.14609	10.7409	3.69e+07	5	7	analytical line
+O	I	777.4170	9.14609	10.7405	3.69e+07	5	5	analytical line
+O	I	777.5390	9.14609	10.7402	3.69e+07	5	3	analytical line
+O	I	844.6360	9.52136	10.9889	3.22e+07	3	5	analytical line
+P	I	213.6180	1.41052	7.2127	2.83e+08	6	4	analytical line
+P	I	214.9150	1.40859	7.17578	3.18e+08	4	2	analytical line
+P	I	253.5600	2.32446	7.2127	9.5e+07	4	4	analytical line
+P	I	255.3260	2.32132	7.17578	7.1e+07	2	2	analytical line
+Pb	I	368.3460	0.969465	4.33448	1.37e+08	3	1	analytical line
+Pb	I	405.7810	1.32047	4.37506	9e+07	5	3	analytical line
+Pr	II	414.3110	0.371749	3.36344	8.9e+07	15	17	analytical line
+Pr	II	417.9390	0.204451	3.17018	6.8e+07	13	15	analytical line
+Pr	II	422.2930	0.054795	2.98994	4.7e+07	11	13	analytical line
+Pr	II	440.8820	0	2.8114	3.58e+07	9	11	resonance (lower level 0 eV): self-absorption prone
+Sc	II	361.3830	0.022039	3.45189	1.48e+08	7	9	analytical line
+Sc	II	424.6820	0.315038	3.23367	1.29e+08	5	5	analytical line
+Si	I	250.6900	0.009561	4.9538	5.47e+07	3	5	analytical line
+Si	I	251.6110	0.0276679	4.9538	1.68e+08	5	5	analytical line
+Si	I	252.8510	0.0276679	4.92965	9.04e+07	5	3	analytical line
+Si	I	288.1580	0.780958	5.08235	2.17e+08	5	3	analytical line
+Si	I	390.5520	1.90866	5.08235	1.33e+07	1	3	analytical line
+Sm	II	359.2600	0.37848	3.8286	6.6e+07	12	14	analytical line
+Sm	II	360.9490	0.277473	3.71144	5.8e+07	10	12	analytical line
+Sn	I	283.9980	0.424977	4.78937	1.7e+08	5	5	analytical line
+Sn	I	317.5040	0.424977	4.32882	1e+08	5	3	analytical line
+Sn	I	326.2330	1.06787	4.86725	2.7e+08	5	3	analytical line
+Sr	I	460.7330	0	2.69027	2.01e+08	1	3	resonance (lower level 0 eV): self-absorption prone
+Sr	II	407.7710	0	3.03968	1.41e+08	2	4	resonance (lower level 0 eV): self-absorption prone
+Sr	II	421.5520	0	2.94031	1.279e+08	2	2	resonance (lower level 0 eV): self-absorption prone
+Tb	II	350.9170	0	3.53216	5.37e+07	17	19	resonance (lower level 0 eV): self-absorption prone
+Tb	II	367.6350	0.126015	3.49752	1.19e+08	15	15	analytical line
+Tb	II	384.8730	0	3.22051	5.43e+07	17	17	resonance (lower level 0 eV): self-absorption prone
+Ti	I	498.1730	0.848419	3.3365	6.6e+07	11	13	analytical line
+Ti	II	323.4510	0.0487811	3.88084	1.71e+08	10	10	analytical line
+Ti	II	334.9400	0.0487811	3.7494	1.68e+08	10	12	analytical line
+Ti	II	336.1210	0.0279837	3.7156	1.58e+08	8	10	analytical line
+Tm	I	371.7910	0	3.33383	1.44e+08	8	10	resonance (lower level 0 eV): self-absorption prone
+Tm	II	313.1260	0	3.95842	1.06e+08	9	11	resonance (lower level 0 eV): self-absorption prone
+Tm	II	346.2200	0	3.58006	5.4e+07	9	11	resonance (lower level 0 eV): self-absorption prone
+Tm	II	384.8020	0	3.22111	4.66e+07	9	7	resonance (lower level 0 eV): self-absorption prone
+W	I	400.8750	0.365913	3.45788	1.63e+07	7	9	analytical line
+W	I	429.4610	0.365913	3.25208	1.24e+07	7	5	analytical line
+Y	II	324.2270	0.179746	4.00263	2.03e+08	7	5	analytical line
+Y	II	360.0730	0.179746	3.62207	1.38e+08	7	7	analytical line
+Y	II	371.0290	0.179746	3.52043	1.54e+08	7	9	analytical line
+Y	II	377.4330	0.129573	3.41357	1.1e+08	5	7	analytical line
+Y	II	437.4930	0.408674	3.24185	1e+08	5	5	analytical line
+Yb	I	398.7990	0	3.10806	1.92e+08	1	3	resonance (lower level 0 eV): self-absorption prone
+Yb	II	328.9370	0	3.76816	1.62e+08	2	4	resonance (lower level 0 eV): self-absorption prone
+Yb	II	369.4190	0	3.35524	1.23e+08	2	2	resonance (lower level 0 eV): self-absorption prone

@@ -17,7 +17,8 @@ Usage:
         --line_list cf_oes54 --sample "PURE KFE" --indices 20
 
 ``--line_list cf_oes54`` restricts the solver to the 54 curated CF spark-OES
-lines (matched by element, stage and wavelength); ``all`` uses every line
+lines (matched by element, stage and wavelength), ``cf_minerals`` to the
+REE-mineral LIBS-in-air list ``cf/data/cf_mineral_lines.tsv``; ``all`` uses every line
 that passes the fit-quality gate.  Values below ``config/element_lod.yaml``
 are reported as censored.
 """
@@ -38,7 +39,13 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from cf.classical import classical_weights, select_cf_oes_lines  # noqa: E402
+from cf.classical import (  # noqa: E402
+    CF_MINERAL_TSV,
+    CF_OES_54_TSV,
+    classical_weights,
+    load_cf_oes_lines,
+    select_cf_oes_lines,
+)
 from cf.solver_np import saha_boltzmann_solve_np  # noqa: E402
 from cf.tables import build_cf_tables  # noqa: E402
 from data.libs_pipeline import _META_COLS, load_spectra_cache  # noqa: E402
@@ -97,10 +104,10 @@ def main() -> None:
     ap.add_argument("--tokens", required=True)
     ap.add_argument("--spectra_cache", required=True)
     ap.add_argument("--line_dict", default=None, help="line_dict_*.h5 (isolation_score / forced)")
-    ap.add_argument("--db", default="external_data/Source/LIBS_data_vacuum.db")
+    ap.add_argument("--db", default="external_data/Source/LIBS_data.db")
     ap.add_argument("--element_lod_config", default="config/element_lod.yaml")
     ap.add_argument("--indices", default="all", help="all | test | <n first matching>")
-    ap.add_argument("--line_list", choices=("all", "cf_oes54"), default="all")
+    ap.add_argument("--line_list", choices=("all", "cf_oes54", "cf_minerals"), default="all")
     ap.add_argument("--deconv", default=None,
                     help="deconv_*.h5 from scripts/deconvolve_lines.py: use the deconvolved "
                          "areas of blended lines instead of their single-Voigt fit")
@@ -193,9 +200,11 @@ def main() -> None:
         print(f"line weights: {int((line_w > 0.5).sum())}/{line_w.size} lines above 0.5")
 
     line_mask = np.ones(wl.shape[0], dtype=bool)
-    if args.line_list == "cf_oes54":
-        line_mask = select_cf_oes_lines(wl, Z, ion)
-        print(f"cf_oes54: {int(line_mask.sum())}/54 curated lines found in the token cache")
+    if args.line_list != "all":
+        tsv = CF_OES_54_TSV if args.line_list == "cf_oes54" else CF_MINERAL_TSV
+        line_mask = select_cf_oes_lines(wl, Z, ion, tsv_path=tsv)
+        n_ref = len(load_cf_oes_lines(tsv))
+        print(f"{args.line_list}: {int(line_mask.sum())}/{n_ref} curated lines found in the token cache")
 
     out_dir = Path(args.out) if args.out else Path("evaluation") / f"cf_classical_{datetime.now():%Y-%m-%d_%H-%M-%S}"
     out_dir.mkdir(parents=True, exist_ok=True)

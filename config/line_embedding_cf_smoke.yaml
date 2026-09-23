@@ -2,7 +2,7 @@
 # rules, fewer lines per element (8) and a single fit worker.
 
 line_dictionary:
-  db_path: external_data/Source/LIBS_data_vacuum.db
+  db_path: external_data/Source/LIBS_data.db
   te_range: [6500.0, 11000.0]   # K
   ne_range: [1.0e17, 5.0e17]    # cm^-3
   n_grid:
@@ -15,19 +15,18 @@ line_dictionary:
     max_interference_fraction: 0.3
     reference_te: 10000
     reference_ne: 1.0e17
-    ambient_elements: {Ar: 1.0}
+    ambient_elements: {N: 0.78, O: 0.21, Ar: 0.0093}  # LIBS in air: air number fractions as interferer weights
     max_lines_per_species: 8
     min_lines_per_species: 4
-    force_include: cf/data/cf_oes_lines_54.tsv
+    force_include: cf/data/cf_mineral_lines.tsv  # curated REE-mineral LIBS lines (air), flagged forced=1
     target_elements: from_sample_matrix
-    sample_matrix: external_data/Source/Samples_Fe_matrix.xlsx
+    sample_matrix: external_data/Source/REE_minerals_oxides.xlsx  # Concentrations sheet (element wt%)
     interferer_units: number
     typical_concentration_floor: 1.0e-4
-  wavelength_clip:
-    min: null
-    max: null
-  wavelength_json: external_data/Data/VASKUT K8.json
-  use_wavelength_json_clip: true
+  wavelength_clip:              # LIGHTIGO spectrometer span
+    min: 188.6
+    max: 859.2
+  use_wavelength_json_clip: false
   cache_dir: external_data/cache
 
 line_features:
