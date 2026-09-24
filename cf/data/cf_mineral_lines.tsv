@@ -2,13 +2,14 @@
 # spectrometer, 188.6-859.1 nm).  Standard LIBS / ICP-OES analytical lines of the matrix,
 # volatile, ambient-air and rare-earth elements, each matched to external_data/Source/LIBS_data.db
 # (element, stage, |dlambda| <= 0.02 nm; strongest gk*Ak on ties).  All values are copied from
-# that DB: AIR wavelengths [nm], energies [eV], Ak [1/s].  Forced into the cf_isolated line
-# dictionary (config/line_embedding_cf*.yaml, flagged forced=1); isolation_score and the CF
-# weights decide how much each line is trusted.  Resonance lines are kept but flagged: they are
-# the most sensitive lines of trace elements but self-absorb at major concentrations.
-# Candidates NOT in LIBS_data.db (add them to the DB to use them): La II 333.749, Ce II 413.380,
-# Ce II 418.660, Pr II 390.844, Sm II 442.434, Sm II 443.432, Gd II 335.047, 342.247, 364.619,
-# 376.839, Ho II 345.600, 381.073.  Replaces cf_oes_lines_54.tsv (steel, vacuum) for this project.
+# that DB: AIR wavelengths [nm], energies [eV], Ak [1/s].  Gd II, Sm II, Ho II lines come from the
+# Wisconsin laboratory data added by scripts/augment_line_db.py (NIST ASD has no Aki for them).
+# Forced into the cf_isolated line dictionary (config/line_embedding_cf*.yaml, flagged forced=1);
+# isolation_score and the CF weights decide how much each line is trusted.  Resonance lines are
+# kept but flagged: they are the most sensitive lines of trace elements but self-absorb at major
+# concentrations.
+# Candidates NOT in LIBS_data.db (no Aki in NIST ASD or the laboratory data): La II 333.749, Ce II 413.380, Ce II 418.660, Pr II 390.844.
+# Replaces cf_oes_lines_54.tsv (steel, vacuum) for this project.
 Elem_name	ion.state	Wl	Ei	Ek	Ak	gi	gk	comment
 Al	I	308.2150	0	4.02148	5.87e+07	2	4	resonance (lower level 0 eV): self-absorption prone
 Al	I	309.2710	0.0138938	4.02165	7.29e+07	4	6	analytical line
@@ -62,8 +63,14 @@ Fe	I	404.5810	1.48486	4.54851	8.62e+07	9	9	analytical line
 Fe	I	438.3540	1.48486	4.31247	5e+07	9	11	analytical line
 Fe	II	238.2040	0	5.20338	3.13e+08	10	12	resonance (lower level 0 eV): self-absorption prone
 Fe	II	259.9400	0	4.76831	2.35e+08	10	10	resonance (lower level 0 eV): self-absorption prone
+Gd	II	335.0478	0.143691	3.84312	1.24e+08	12	14	analytical line
+Gd	II	342.2464	0.239948	3.86157	1.84e+08	14	16	analytical line
+Gd	II	364.6195	0.239948	3.63935	7.5e+07	14	14	analytical line
+Gd	II	376.8396	0.0785158	3.36769	7.6e+07	10	10	analytical line
 H	I	486.1350	10.1988	12.7485	8.419e+06	8	32	analytical line
 H	I	656.2790	10.1988	12.0875	4.41e+07	8	18	analytical line
+Ho	II	345.6010	0	3.58647	1.7e+08	17	19	resonance (lower level 0 eV): self-absorption prone
+Ho	II	381.0710	0	3.25265	4.79e+07	17	15	resonance (lower level 0 eV): self-absorption prone
 Ho	II	389.1020	0.079028	3.26461	6.99e+07	15	17	analytical line
 K	I	766.4900	0	1.61711	3.779e+07	2	4	resonance (lower level 0 eV): self-absorption prone
 K	I	769.8960	0	1.60996	3.734e+07	2	2	resonance (lower level 0 eV): self-absorption prone
@@ -123,6 +130,8 @@ Si	I	288.1580	0.780958	5.08235	2.17e+08	5	3	analytical line
 Si	I	390.5520	1.90866	5.08235	1.33e+07	1	3	analytical line
 Sm	II	359.2600	0.37848	3.8286	6.6e+07	12	14	analytical line
 Sm	II	360.9490	0.277473	3.71144	5.8e+07	10	12	analytical line
+Sm	II	442.4340	0.484731	3.28627	3.92e+07	14	12	analytical line
+Sm	II	443.4320	0.37848	3.17371	2.86e+07	12	10	analytical line
 Sn	I	283.9980	0.424977	4.78937	1.7e+08	5	5	analytical line
 Sn	I	317.5040	0.424977	4.32882	1e+08	5	3	analytical line
 Sn	I	326.2330	1.06787	4.86725	2.7e+08	5	3	analytical line
