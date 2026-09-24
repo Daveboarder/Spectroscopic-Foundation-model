@@ -33,7 +33,7 @@ The LIBS Foundation Model is a self-supervised transformer for Laser Induced Bre
 
 ### Data and embedding modes
 
-Training data is selected with `--libs_data_config`, which `build_dataset_from_config` (`data/libs_pipeline.py`) dispatches to one of three sources: the **physics-version-2 generator** (`config/libs_data.yaml`, `generation.plasma_model: mixed` — Kirchhoff-consistent one-/two-zone LTE radiative transfer, `data/two_zone_pipeline.py`), the **legacy physics-version-1 generator** (data configs without `plasma_model`, e.g. `config/libs_data_smoke.yaml`) or the **measured pipeline** (`config/libs_data_measured.yaml` with `source: measured`, handled by `data/measured_pipeline.py` — experimental Chameleon OptiCal JSON spectra interpolated onto the same 17,428-bin wavelength axis, unit-normalised and cached as `measured_cache_{md5}.h5`; build it ahead of time with `scripts/build_measured_dataset.py`). Without the flag both training scripts fall back to the legacy 5-class `SyntheticLIBSGenerator`.
+Training data is selected with `--libs_data_config`, which `build_dataset_from_config` (`data/libs_pipeline.py`) dispatches to one of three sources: the **physics-version-2 generator** (`config/libs_data.yaml`, `generation.plasma_model: two_zone` — Kirchhoff-consistent two-zone LTE radiative transfer, `data/two_zone_pipeline.py`; `one_zone` and `mixed` remain available for ablations), the **legacy physics-version-1 generator** (data configs without `plasma_model`, e.g. `config/libs_data_smoke.yaml`) or the **measured pipeline** (`config/libs_data_measured.yaml` with `source: measured`, handled by `data/measured_pipeline.py` — experimental Chameleon OptiCal JSON spectra interpolated onto the same 17,428-bin wavelength axis, unit-normalised and cached as `measured_cache_{md5}.h5`; build it ahead of time with `scripts/build_measured_dataset.py`). Without the flag both training scripts fall back to the legacy 5-class `SyntheticLIBSGenerator`.
 
 | Embedding | `model.embedding_type` | Sequence | Pre-train target |
 |-----------|------------------------|----------|------------------|
@@ -218,7 +218,7 @@ params ≈ n_layers × (4 × d_model² + 2 × d_model × d_ff)
 
 ### Physics-version-2 generator (`data/two_zone_pipeline.py` + `data/plasma_physics.py`)
 
-Selected by `generation.plasma_model: one_zone | two_zone | mixed` (`config/libs_data.yaml`, `config/libs_data_cf_smoke.yaml`; `mixed` draws two-zone shots with probability `two_zone_fraction`, 0.7). All line physics lives in `data/plasma_physics.py` (numpy, CGS), which is also the single source of truth for the line dictionary and the CF solver.
+Selected by `generation.plasma_model: one_zone | two_zone | mixed`. Both `config/libs_data.yaml` and `config/libs_data_cf_smoke.yaml` use `two_zone`, so every shot is a hot core inside a cool shell; `mixed` draws two-zone shots with probability `two_zone_fraction` (0.7) and `one_zone` collapses the shell, both kept for ablations. Note that the CF loss terms `lambda_T` and `lambda_Ne` supervise T and Nₑ on one-zone shots only, so under `two_zone` they are inactive and the plasma-init head learns T/Nₑ only through the concentration and `lambda_Nl` terms. All line physics lives in `data/plasma_physics.py` (numpy, CGS), which is also the single source of truth for the line dictionary and the CF solver.
 
 **Line physics (Kirchhoff-consistent).** For every DB line at a zone state (T, Nₑ) the integrated absorption per unit species density is `kt = λ⁴/(8πc) · A_ki g_k e^{−E_i/kT} (1 − e^{−ΔE/kT}) / U_s(T)` and the integrated emissivity `ε_int = (hc/4πλ) · A_ki g_k e^{−E_k/kT} · n_s/U_s(T)`, so that `ε/κ` equals the Planck source function `B_λ(T)` line by line (`line_source_function`, evaluated with ΔE = E_k − E_i so the identity holds exactly despite DB rounding). The optically thin limit of a line is therefore the textbook `(hc/4πλ) · A g_k e^{−E_k/kT} · n_s/U · l`, and the thick limit saturates at `B_λ(T)`. The species density `n_s = x_e · N · r_stage` uses the Saha split `S10 = n_II/n_I` (same algebra as the legacy code) and **number fractions** `x_e` obtained from the table's mass fractions with `data/atomic_data.py` (`mass_to_number_fractions`, IUPAC atomic weights; `number_to_mass_fractions` for the CF closure).
 
@@ -235,7 +235,7 @@ Selected by `generation.plasma_model: one_zone | two_zone | mixed` (`config/libs
 | `N2`, `Ne2` | `outer_density: isobaric` (default): pressure balance `N2 = N1 · Te1/Te2`, then `Ne2` from Saha equilibrium `Ne = N Σ_e x_e r_II,e(T, Ne)` solved by bisection in log10 Ne (`quasi_neutral` keeps the legacy rule `Ne2 = Ne1 · 10^U(ne2_log_ratio)` for ablations) | — |
 | `l_inner`, `l_outer` | log-uniform (path length per traversal; the outer slab is crossed twice) | 0.003–0.05 cm, 2e-5–2e-3 cm |
 | `gamma_stark1/2` | log-uniform, independently per zone | 0.003–0.03 nm |
-| `plasma_model` | `two_zone` with probability `two_zone_fraction`, else `one_zone` (then `Te2 = Te1`, `Ne2 = Ne1`, `N2 = N1`, `l_outer = 0`) | 0.7 |
+| `plasma_model` | `two_zone` for every shot under `plasma_model: two_zone` (the default configs); under `mixed`, `two_zone` with probability `two_zone_fraction`, else `one_zone` (then `Te2 = Te1`, `Ne2 = Ne1`, `N2 = N1`, `l_outer = 0`) | `two_zone` (fraction 0.7 for `mixed`) |
 
 **Calibration** (`scripts/calibrate_generator.py`, against measured PURE KFE spark spectra; the script never edits configs): the instrument FWHM 0.047 nm is the median of Gaussian(+linear baseline) fits to 15 isolated, weak, optically thin Fe lines; the path lengths come from matching two saturation statistics — the area ratio of the five strongest Fe I resonance lines (E_i < 0.2 eV) to five weak high-E_k lines (core column density `N·l` 5e15–3e16 cm⁻²) and of the resonance lines to strong lines with 0.8 < E_i < 1.6 eV, which only the cold shell absorbs (shell `N·l` 1e14–3e14 cm⁻²). With the quasi-neutral densities this gives the config ranges `l_inner_cm: [0.003, 0.05]` and `l_outer_cm: [2e-5, 2e-3]` (log-uniform because they span more than a decade).
 
@@ -523,7 +523,7 @@ The `finetune.cf` block of the CF configs (identical in both) holds the Saha–B
 
 | File | Generator | Sample types | Shots / type | Clusters | Binned bins | Split strategy |
 |------|-----------|--------------|--------------|----------|-------------|----------------|
-| `libs_data.yaml` | physics v2 (`plasma_model: mixed`, `two_zone_fraction: 0.7`, `fine_step_nm: 0.002`, 22 workers) | 2258 (all) | 50 | 10 | 1000 | `random` |
+| `libs_data.yaml` | physics v2 (`plasma_model: two_zone`, `fine_step_nm: 0.002`, 22 workers) | 2258 (all) | 50 | 10 | 1000 | `random` |
 | `libs_data_cf_smoke.yaml` | physics v2 (same knobs, `fine_step_nm: 0.005`, 1 worker) | 3 | 6 | 3 | 50 | `random` |
 | `libs_data_smoke.yaml` | legacy v1 (no `plasma_model`; keeps its old cache key) | 3 | 6 | 3 | 50 | `random` (default) |
 | `libs_data_measured.yaml` (`source: measured`) | measured Chameleon/OptiCal JSON | 121 measured samples (3,346 JSON files) | 1 spectrum per JSON file (first valid run) | 10 | 1000 | `group_sample` |
