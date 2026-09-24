@@ -525,6 +525,7 @@ The `finetune.cf` block of the CF configs (identical in both) holds the Saha–B
 |------|-----------|--------------|--------------|----------|-------------|----------------|
 | `libs_data.yaml` | physics v2 (`plasma_model: two_zone`, `fine_step_nm: 0.002`, 22 workers) | 2258 (all) | 50 | 10 | 1000 | `random` |
 | `libs_data_cf_smoke.yaml` | physics v2 (same knobs, `fine_step_nm: 0.005`, 1 worker) | 3 | 6 | 3 | 50 | `random` |
+| `libs_data_minerals_smoke.yaml` | physics v2 (`plasma_model: two_zone`, `fine_step_nm: 0.005`, 6 workers), sample matrix `REE_minerals_oxides.xlsx`, DB `LIBS_data.db`; VASKUT axis until the LIGHTIGO loader exists | 6 (first rows) | 4 | 3 | 50 | `random` |
 | `libs_data_smoke.yaml` | legacy v1 (no `plasma_model`; keeps its old cache key) | 3 | 6 | 3 | 50 | `random` (default) |
 | `libs_data_measured.yaml` (`source: measured`) | measured Chameleon/OptiCal JSON | 121 measured samples (3,346 JSON files) | 1 spectrum per JSON file (first valid run) | 10 | 1000 | `group_sample` |
 

@@ -1,0 +1,61 @@
+# Smoke-test data config for REE minerals: physics_version-2 two-zone generator
+# fed by external_data/Source/REE_minerals_oxides.xlsx (element wt% derived from
+# oxide compositions; the generator row-normalises to mass fractions) and the
+# air-wavelength line DB LIBS_data.db. 6 minerals x 4 shots, coarse fine_step_nm
+# for speed. Cache: synthetic_cache_<key>.h5 (new key; the sample matrix and the
+# DB content are both part of the hash).
+#
+# NOTE: the wavelength axis is still the VASKUT spark-OES axis (146-419 nm,
+# 17,428 points). The LIGHTIGO HDF5 axis (188.6-859.1 nm) is not wired in yet,
+# so REE lines above 419 nm are not synthesised. Replace wavelength_json once
+# the LIGHTIGO loader exists.
+paths:
+  db:                "external_data/Source/LIBS_data.db"          # air wavelengths, REE lines included
+  sample_matrix:     "external_data/Source/REE_minerals_oxides.xlsx"
+  wavelength_json:   "external_data/Data/VASKUT K8.json"
+  cache_dir:         "external_data/cache"
+
+ranges:                       # legacy keys, unused by the v2 generator
+  te: [6500.0, 11000.0]
+  ne: [1.0e+17, 5.0e+17]
+
+generation:
+  n_samples_per_type: 4       # shots per mineral
+  max_sample_types: 6         # first 6 rows of the Concentrations sheet
+  number_density:    auto     # quasi-neutrality per zone
+  number_density_max: null
+  n_workers:         6
+  seed:              42
+  verbose:           true
+
+  plasma_model: two_zone      # every shot: hot core + cool shell (mirrors config/libs_data.yaml)
+  outer_density: isobaric
+  two_zone_fraction: 0.7      # mixed only; ignored under two_zone
+  zones:
+    te1: [8000, 20000]
+    ne1: [5.0e+16, 3.0e+18]
+    te2_ratio: [0.15, 0.6]
+    ne2_log_ratio: [-3, -1]
+    l_inner_cm: [0.003, 0.05]
+    l_outer_cm: [2.0e-5, 2.0e-3]
+    gamma_stark_nm: [0.003, 0.03]
+  instrument:
+    profile: gaussian
+    fwhm_nm: 0.047             # VASKUT calibration; re-calibrate for LIGHTIGO
+  fine_step_nm: 0.005         # coarser than the full config (0.002) for speed
+  line_window_nm: 0.4
+  adaptive_window: true
+  min_relative_intensity: 1.0e-7
+  augment:
+    noise_sigma: 0.0
+    continuum: 0.0
+
+downstream:
+  elements_to_predict: null   # all element columns present in the DB (46)
+  n_clusters: 3
+  n_concentration_bins: 50    # tiny for smoke test (full is 1000)
+  splits:
+    strategy: random
+    val_fraction: 0.2
+    test_fraction: 0.2
+    seed: 42
