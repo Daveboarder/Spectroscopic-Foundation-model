@@ -286,12 +286,23 @@ def _generate_libs_pipeline_labeled(
 
     # Override n_classes (= cluster count), n_elements (= concentration vector dim),
     # and n_concentration_bins (per-element bin count for the binned task).
-    n_clusters = downstream.get('n_clusters', 10)
+    # Classification labels: `downstream.class_label` = "cluster" (KMeans on the
+    # concentration vectors, `n_clusters` classes; default) or "sample_type"
+    # (one class per row of the sample matrix, e.g. one per mineral).
+    class_label = str(downstream.get('class_label', 'cluster'))
+    if class_label == 'sample_type':
+        _, cluster_labels = np.unique(sample_type_ids, return_inverse=True)
+        cluster_labels = cluster_labels.astype(np.int64)
+        n_clusters = int(cluster_labels.max()) + 1
+        print(f"Classification labels: sample_type ({n_clusters} classes)")
+    elif class_label == 'cluster':
+        n_clusters = downstream.get('n_clusters', 10)
+        cluster_labels = cluster_compositions(concentrations, n_clusters=n_clusters, seed=seed)
+    else:
+        raise ValueError(f"downstream.class_label must be 'cluster' or 'sample_type', got {class_label!r}")
     config['data']['n_classes'] = n_clusters
     config['data']['n_elements'] = len(element_names)
     config['data']['n_concentration_bins'] = downstream.get('n_concentration_bins', 1000)
-
-    cluster_labels = cluster_compositions(concentrations, n_clusters=n_clusters, seed=seed)
 
     # Shared deterministic split — cached alongside the spectra. Pretrain and
     # finetune will read the same JSON so test set is consistent across phases.

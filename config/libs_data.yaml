@@ -13,7 +13,7 @@
 # =============================================================================
 
 paths:
-  db:                "external_data/Source/LIBS_data_vacuum.db"
+  db:                "external_data/Source/LIBS_data.db"
   sample_matrix:     "external_data/Source/Samples_Fe_matrix.xlsx"
   wavelength_json:   "external_data/Data/VASKUT K8.json"
   cache_dir:         "external_data/cache"
@@ -36,8 +36,8 @@ generation:
   verbose:           true
 
   # ---- physics_version 2 -------------------------------------------------
-  plasma_model: mixed            # legacy | one_zone | two_zone | mixed
-  two_zone_fraction: 0.7         # mixed: probability that a shot is two_zone
+  plasma_model: two_zone         # legacy | one_zone | two_zone | mixed; two_zone = every shot hot core + cool shell
+  two_zone_fraction: 0.7         # mixed only: probability that a shot is two_zone (forced to 1.0 under two_zone)
   outer_density: isobaric        # isobaric: N2 = N1*Te1/Te2, Ne2 from Saha equilibrium (quasi_neutral = legacy rule)
   zones:
     te1: [8000, 20000]           # K, uniform (cap 20 kK: DB has no stage III)

@@ -72,6 +72,7 @@ from data.libs_pipeline import (
     _LEGACY_META_COLS,
     _load_partf,
     _reset_db_caches,
+    line_db_cache_key,
     load_sample_types,
     load_wavelength,
     unit_norm,
@@ -775,6 +776,7 @@ class TwoZoneSyntheticDataset(SyntheticLIBSDataset):
             "wavelength_first": float(self.wavelength[0]),
             "wavelength_last": float(self.wavelength[-1]),
             "seed": self.seed,
+            **line_db_cache_key(self.db_path),
         }
         return hashlib.md5(json.dumps(cfg, sort_keys=True, default=str).encode()).hexdigest()[:12]
 

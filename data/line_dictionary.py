@@ -38,7 +38,12 @@ import numpy as np
 import pandas as pd
 
 from data.atomic_data import mass_to_number_fractions
-from data.libs_pipeline import load_sample_types, load_wavelength
+from data.libs_pipeline import (
+    is_element_symbol,
+    line_db_cache_key,
+    load_sample_types,
+    load_wavelength,
+)
 from data.plasma_physics import thin_line_intensities
 
 # Ion state vocabulary for categorical embedding
@@ -108,7 +113,8 @@ def _list_elements(db_path: str) -> list[str]:
     conn = sqlite3.connect(db_path)
     cur = conn.cursor()
     cur.execute("SELECT DISTINCT Elem_name FROM QuantParam ORDER BY Elem_name")
-    elems = [r[0] for r in cur.fetchall()]
+    # Skip DB artefacts ("Al-II", "", "n", "r" in LIBS_data.db): they have no E_ion entry.
+    elems = [str(r[0]).strip() for r in cur.fetchall() if is_element_symbol(r[0])]
     conn.close()
     return elems
 
@@ -592,6 +598,8 @@ def _hash_config(ld_cfg: dict[str, Any], project_root: Path) -> dict[str, Any]:
     the content hash of the force_include file when present)."""
     hash_cfg = {k: v for k, v in ld_cfg.items() if k != "cache_dir"}
     hash_cfg["physics_version"] = LINE_DICT_PHYSICS_VERSION
+    # Content hash of the line DB (not for the legacy vacuum DB: keeps its old hashes).
+    hash_cfg.update(line_db_cache_key(str(_resolve_path(ld_cfg["db_path"], project_root))))
     sel = ld_cfg.get("selection") or {}
     force_path = sel.get("force_include")
     if str(sel.get("mode", "")).strip().lower() == "cf_isolated" and force_path:

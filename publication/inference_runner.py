@@ -32,7 +32,7 @@ from training.finetune import LIBSFinetuneModule
 from utils.run_manager import RunManager
 
 CF_TASK = "cf_quantification"
-DEFAULT_DB_PATH = "external_data/Source/LIBS_data_vacuum.db"
+DEFAULT_DB_PATH = "external_data/Source/LIBS_data.db"
 DEFAULT_LOD_CONFIG = "config/element_lod.yaml"
 
 

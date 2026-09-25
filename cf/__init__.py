@@ -31,10 +31,10 @@ atomic masses; censored below the per-element LOD.
 
 from cf.tables import CFTables, CFTablesTorch, build_cf_tables
 from cf.solver_np import CFResult, saha_boltzmann_solve_np
-from cf.classical import classical_weights, select_cf_oes_lines, load_cf_oes_lines, CF_OES_54_TSV
+from cf.classical import classical_weights, select_cf_oes_lines, load_cf_oes_lines, CF_OES_54_TSV, CF_MINERAL_TSV
 
 __all__ = [
     "CFTables", "CFTablesTorch", "build_cf_tables",
     "CFResult", "saha_boltzmann_solve_np",
-    "classical_weights", "select_cf_oes_lines", "load_cf_oes_lines", "CF_OES_54_TSV",
+    "classical_weights", "select_cf_oes_lines", "load_cf_oes_lines", "CF_OES_54_TSV", "CF_MINERAL_TSV",
 ]
