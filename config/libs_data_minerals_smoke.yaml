@@ -1,18 +1,27 @@
-# Smoke-test data config for REE minerals: physics_version-2 two-zone generator
-# fed by external_data/Source/REE_minerals_oxides.xlsx (element wt% derived from
-# oxide compositions; the generator row-normalises to mass fractions) and the
-# air-wavelength line DB LIBS_data.db. 6 minerals x 4 shots, coarse fine_step_nm
-# for speed. Cache: synthetic_cache_<key>.h5 (new key; the sample matrix and the
-# DB content are both part of the hash).
+# Smoke-test data config for REE minerals on the LIGHTIGO / FireFly instrument.
+# physics_version-2 two-zone generator fed by external_data/Source/REE_minerals_oxides.xlsx
+# (element wt% derived from oxide compositions; the generator row-normalises to mass
+# fractions) and the air-wavelength line DB LIBS_data.db. 8 minerals x 12 shots = 96
+# spectra, coarse fine_step_nm for speed.
 #
-# NOTE: the wavelength axis is still the VASKUT spark-OES axis (146-419 nm,
-# 17,428 points). The LIGHTIGO HDF5 axis (188.6-859.1 nm) is not wired in yet,
-# so REE lines above 419 nm are not synthesised. Replace wavelength_json once
-# the LIGHTIGO loader exists.
+# "Calibrated" against the LIGHTIGO maps of native bismuth and hematite
+# (scripts/calibrate_generator_lightigo.py, 2026-09-24/25):
+#   * wavelength axis = the LIGHTIGO axis of the hematite map matrix_01.h5
+#     (14,905 pixels, 188.6-859.1 nm, five channels; read from the HDF5 file),
+#     so synthetic and measured spectra share their bins;
+#   * core Te 8-11 kK and Ne ~1e16-1e17 cm^-3 measured -> te1 / ne1 ranges lowered;
+#   * instrument Gaussian FWHM 0.15 nm (isolated Bi and Fe lines);
+#   * core column density N*l ~ 5e16 cm^-2 (hematite) -> l_inner_cm raised;
+#   * Stark HWHM ~0.003 nm (unresolved) -> gamma_stark_nm narrowed;
+#   * the cold shell could not be constrained (time-integrated spectra) -> Fe-based
+#     te2_ratio / l_outer_cm ranges kept.
+# The spectrometer's spectral response is NOT modelled: synthetic spectra are true
+# relative radiance; correct measured spectra with data/efficiency_correction.py.
+# Cache: synthetic_cache_<key>.h5 (new key: axis, ranges, sample matrix and DB hash).
 paths:
   db:                "external_data/Source/LIBS_data.db"          # air wavelengths, REE lines included
   sample_matrix:     "external_data/Source/REE_minerals_oxides.xlsx"
-  wavelength_json:   "external_data/Data/VASKUT K8.json"
+  wavelength_json:   "external_data/Data/matrix_01.h5"             # LIGHTIGO axis (HDF5); VASKUT JSON also accepted
   cache_dir:         "external_data/cache"
 
 ranges:                       # legacy keys, unused by the v2 generator
@@ -20,8 +29,8 @@ ranges:                       # legacy keys, unused by the v2 generator
   ne: [1.0e+17, 5.0e+17]
 
 generation:
-  n_samples_per_type: 4       # shots per mineral
-  max_sample_types: 6         # first 6 rows of the Concentrations sheet
+  n_samples_per_type: 12      # shots per mineral
+  max_sample_types: 8         # first 8 rows of the Concentrations sheet
   number_density:    auto     # quasi-neutrality per zone
   number_density_max: null
   n_workers:         6
@@ -32,16 +41,16 @@ generation:
   outer_density: isobaric
   two_zone_fraction: 0.7      # mixed only; ignored under two_zone
   zones:
-    te1: [8000, 20000]
-    ne1: [5.0e+16, 3.0e+18]
-    te2_ratio: [0.15, 0.6]
-    ne2_log_ratio: [-3, -1]
-    l_inner_cm: [0.003, 0.05]
-    l_outer_cm: [2.0e-5, 2.0e-3]
-    gamma_stark_nm: [0.003, 0.03]
+    te1: [6000, 14000]           # K; LIGHTIGO fits: Bi ~8 kK, hematite ~10.6 kK
+    ne1: [1.0e+16, 1.0e+18]      # cm^-3; fits ~4e16-1e17 (weakly constrained)
+    te2_ratio: [0.15, 0.6]       # unconstrained by the time-integrated data; Fe-based
+    ne2_log_ratio: [-3, -1]      # only used when outer_density: quasi_neutral
+    l_inner_cm: [0.01, 0.5]      # log-uniform; hematite N*l ~5e16-8e16 cm^-2
+    l_outer_cm: [2.0e-5, 2.0e-3]  # log-uniform; Fe-based (shell unconstrained)
+    gamma_stark_nm: [0.002, 0.01] # Lorentz HWHM; fits ~0.003 nm
   instrument:
     profile: gaussian
-    fwhm_nm: 0.047             # VASKUT calibration; re-calibrate for LIGHTIGO
+    fwhm_nm: 0.15                # LIGHTIGO: isolated Bi / Fe lines 0.14-0.17 nm
   fine_step_nm: 0.005         # coarser than the full config (0.002) for speed
   line_window_nm: 0.4
   adaptive_window: true
@@ -52,7 +61,8 @@ generation:
 
 downstream:
   elements_to_predict: null   # all element columns present in the DB (46)
-  n_clusters: 3
+  class_label: sample_type    # classification = mineral identity (one class per matrix row)
+  n_clusters: 8               # only used when class_label: cluster
   n_concentration_bins: 50    # tiny for smoke test (full is 1000)
   splits:
     strategy: random

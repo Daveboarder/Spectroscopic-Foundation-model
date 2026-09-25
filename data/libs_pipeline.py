@@ -310,8 +310,17 @@ def _get_one_ccd_range(json_path: str, run_id: int, integration_phase: int, ccd_
 
 
 def load_wavelength(json_path: str, run_id: int = 1, integration_phase: int = 1) -> np.ndarray:
-    """Build the full LIBS wavelength axis by concatenating the two CCD ranges
-    of a VASKUT-style analysis JSON. Returns shape (N,) — used as n_bins."""
+    """Build the full LIBS wavelength axis. Returns shape (N,) — used as n_bins.
+
+    * ``*.json``: VASKUT-style analysis JSON, the two CCD ranges concatenated.
+    * ``*.h5`` / ``*.hdf5``: LIGHTIGO HDF5 file, ``measurements/<first>/libs/calibration``
+      (14,905 pixels, 188.6–859.1 nm, five channels, non-monotonic at the seams).
+      The YAML key stays ``paths.wavelength_json`` for backward compatibility.
+    """
+    if str(json_path).lower().endswith((".h5", ".hdf5")):
+        from data.efficiency_correction import load_lightigo_axis  # lazy: h5py
+
+        return load_lightigo_axis(json_path)
     w1 = _get_one_ccd_range(json_path, run_id, integration_phase, 1)
     w2 = _get_one_ccd_range(json_path, run_id, integration_phase, 2)
     return np.concatenate([w1, w2])
