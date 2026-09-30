@@ -107,6 +107,8 @@ class LIBSPretrainModule(pl.LightningModule):
         warmup_epochs: Number of warmup epochs
         max_epochs: Maximum number of training epochs
         min_lr: Minimum learning rate for scheduler
+        mask_ratio, mask_span_tokens: window masking of ``spectral_patch`` models,
+            which is drawn here on the GPU (the other modes mask in the dataset)
     """
     
     def __init__(
@@ -120,6 +122,8 @@ class LIBSPretrainModule(pl.LightningModule):
         loss_type: str = "mse",
         intensity_discretizer: Optional[SpectroscopicDiscretizer] = None,
         fwhm_discretizer: Optional[SpectroscopicDiscretizer] = None,
+        mask_ratio: float = 0.15,
+        mask_span_tokens: int = 1,
     ):
         super().__init__()
         self.save_hyperparameters(
@@ -135,6 +139,8 @@ class LIBSPretrainModule(pl.LightningModule):
         self.loss_type = loss_type
         self.intensity_discretizer = intensity_discretizer
         self.fwhm_discretizer = fwhm_discretizer
+        self.mask_ratio = float(mask_ratio)
+        self.mask_span_tokens = int(mask_span_tokens)
         
         self.mse_loss = nn.MSELoss()
         self.ce_loss = (
@@ -181,6 +187,32 @@ class LIBSPretrainModule(pl.LightningModule):
             return torch.tensor(0.0, device=predictions.device, requires_grad=True)
         
         return self.mse_loss(masked_preds, masked_targets)
+
+    def _is_patch_model(self) -> bool:
+        return getattr(self.model, 'embedding_type', None) == 'spectral_patch'
+
+    def _patch_step(
+        self,
+        batch: Dict[str, torch.Tensor],
+        generator: Optional[torch.Generator] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Masked-window reconstruction for ``spectral_patch`` models.
+
+        Returns (loss, masked predictions, masked targets); predictions and
+        targets are the asinh-transformed samples of the masked windows."""
+        x = batch['spectrum']
+        emb = self.model.embedding
+        token_mask = emb.sample_token_mask(
+            x.shape[0], self.mask_ratio, self.mask_span_tokens,
+            device=x.device, generator=generator,
+        )
+        outputs = self.model(x, mask=token_mask)
+        with torch.no_grad():
+            targets = emb.window_targets(x)
+        preds = outputs['mip_predictions'].float()
+        m = token_mask.unsqueeze(-1).expand_as(preds)
+        masked_preds, masked_targets = preds[m], targets[m]
+        return self.mse_loss(masked_preds, masked_targets), masked_preds, masked_targets
 
     def _forward_batch(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         if 'tokens' in batch:
@@ -237,8 +269,11 @@ class LIBSPretrainModule(pl.LightningModule):
         Returns:
             Loss value
         """
-        outputs = self._forward_batch(batch)
-        loss = self._compute_batch_loss(outputs, batch)
+        if self._is_patch_model():
+            loss, _, _ = self._patch_step(batch)
+        else:
+            outputs = self._forward_batch(batch)
+            loss = self._compute_batch_loss(outputs, batch)
         
         # Log metrics
         self.log('train/loss', loss, on_step=True, on_epoch=True, prog_bar=True)
@@ -257,6 +292,20 @@ class LIBSPretrainModule(pl.LightningModule):
         Returns:
             Dictionary with loss and predictions
         """
+        if self._is_patch_model():
+            # fixed masks per batch index, so val/loss is comparable across epochs
+            gen = torch.Generator(device=batch['spectrum'].device)
+            gen.manual_seed(1_000_003 + batch_idx)
+            loss, masked_preds, masked_targets = self._patch_step(batch, generator=gen)
+            with torch.no_grad():
+                mae = torch.abs(masked_preds - masked_targets).mean()
+                ss_res = ((masked_targets - masked_preds) ** 2).sum()
+                ss_tot = ((masked_targets - masked_targets.mean()) ** 2).sum()
+                r2 = 1 - ss_res / (ss_tot + 1e-8)
+            self.log('val/loss', loss, on_epoch=True, prog_bar=True, sync_dist=True)
+            self.log('val/mae', mae, on_epoch=True, sync_dist=True)
+            self.log('val/r2', r2, on_epoch=True, sync_dist=True)
+            return {'loss': loss, 'predictions': None}
         outputs = self._forward_batch(batch)
         loss = self._compute_batch_loss(outputs, batch)
         line_mask = batch['mask']
@@ -400,8 +449,10 @@ class PretrainDataModule(pl.LightningDataModule):
         line_tokens_path: Optional[str] = None,
         train_indices: Optional[np.ndarray] = None,
         val_indices: Optional[np.ndarray] = None,
+        spectral_patch: bool = False,
     ):
         super().__init__()
+        self.spectral_patch = bool(spectral_patch)
         self.train_spectra = train_spectra
         self.val_spectra = val_spectra
         self.batch_size = batch_size
@@ -423,11 +474,18 @@ class PretrainDataModule(pl.LightningDataModule):
             MaskedLIBSDataset,
             MaskedLineTokenDataset,
             MaskedLineTokensDataset,
+            SpectrumDataset,
         )
         import numpy as np
         
         if stage == 'fit' or stage is None:
-            if self.line_tokens_path:
+            if self.spectral_patch:
+                # raw spectra; the window masks are drawn by LIBSPretrainModule
+                self.train_dataset = SpectrumDataset(self.train_spectra)
+                self.val_dataset = SpectrumDataset(self.val_spectra)
+                print(f"\nSpectral-patch pretrain (masked windows): "
+                      f"{len(self.train_dataset)} train / {len(self.val_dataset)} val spectra")
+            elif self.line_tokens_path:
                 self.train_dataset = MaskedLineTokensDataset(
                     self.line_tokens_path,
                     indices=self.train_indices,

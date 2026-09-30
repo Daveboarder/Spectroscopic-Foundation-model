@@ -40,6 +40,11 @@ from data.line_embedding_pipeline import (
     prepare_line_tokens_assets,
 )
 from models.libs_transformer import LIBSTransformer
+from models.spectral_patch_embedding import (
+    axis_signature,
+    spectral_meta_from_config,
+    spectral_patch_run_info,
+)
 from training.finetune import LIBSFinetuneModule, FinetuneDataModule
 from utils.run_manager import RunManager
 
@@ -449,6 +454,7 @@ def load_pretrained_model(
     checkpoint_path: str,
     line_dict_meta: dict | None = None,
     line_token_meta: dict | None = None,
+    spectral_meta: dict | None = None,
 ) -> LIBSTransformer:
     emb_type = config['model'].get('embedding_type', 'intensity')
     kwargs = dict(
@@ -471,10 +477,17 @@ def load_pretrained_model(
         kwargs['n_mip_target_channels'] = int(
             config['model'].get('n_mip_target_channels', 2)
         )
+    if emb_type == 'spectral_patch':
+        kwargs['spectral_meta'] = spectral_meta
     model = LIBSTransformer(**kwargs)
 
     checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
     state_dict = _checkpoint_state_dict(checkpoint)
+    if emb_type == 'spectral_patch' and 'embedding.patch_proj.weight' not in state_dict:
+        raise RuntimeError(
+            f"{checkpoint_path} is not a spectral_patch checkpoint (no embedding.patch_proj); "
+            "pretrain with the same embedding_type"
+        )
     _load_weights_shape_safe(model, state_dict)
     print(f"Loaded pre-trained weights from {checkpoint_path}")
     return model
@@ -484,6 +497,7 @@ def create_fresh_model(
     config: dict,
     line_dict_meta: dict | None = None,
     line_token_meta: dict | None = None,
+    spectral_meta: dict | None = None,
 ) -> LIBSTransformer:
     emb_type = config['model'].get('embedding_type', 'intensity')
     kwargs = dict(
@@ -506,6 +520,8 @@ def create_fresh_model(
         kwargs['n_mip_target_channels'] = int(
             config['model'].get('n_mip_target_channels', 2)
         )
+    if emb_type == 'spectral_patch':
+        kwargs['spectral_meta'] = spectral_meta
     model = LIBSTransformer(**kwargs)
     print(f"Created fresh model with {model.num_parameters:,} parameters")
     return model
@@ -793,6 +809,17 @@ def main(args):
                 f"embedding_type={requested_emb!r} finetune requires "
                 "--line_embedding_config and --libs_data_config"
             )
+    if requested_emb == 'spectral_patch':
+        if args.task == 'cf_quantification':
+            raise ValueError(
+                "cf_quantification needs per-line tokens (line_token_linear); spectral_patch "
+                "encoders support classification, quantification(_binned) and detection"
+            )
+        if args.line_embedding_config:
+            raise ValueError("embedding_type='spectral_patch' reads raw spectra; "
+                             "do not pass --line_embedding_config")
+        if not args.libs_data_config:
+            raise ValueError("embedding_type='spectral_patch' requires --libs_data_config")
 
     data = generate_labeled_data(
         config, seed=args.seed, libs_config_path=args.libs_data_config,
@@ -808,6 +835,19 @@ def main(args):
     spectra_cache_path = None
     if 'libs_dataset' in data and hasattr(data['libs_dataset'], '_cache_path'):
         spectra_cache_path = str(data['libs_dataset']._cache_path())
+
+    spectral_meta = None
+    if requested_emb == 'spectral_patch':
+        wavelength = np.asarray(data['libs_dataset'].wavelength, dtype=np.float64)
+        spectral_meta = spectral_meta_from_config(config['model'], wavelength)
+        if pretrain_run_dir:
+            pre_info = yaml.safe_load(open(Path(pretrain_run_dir) / "run_info.yaml")) or {}
+            pre_axis = ((pre_info.get('spectral_patch') or {}).get('axis') or {})
+            if pre_axis.get('md5') and pre_axis['md5'] != axis_signature(wavelength)['md5']:
+                raise ValueError(
+                    f"wavelength axis of {args.libs_data_config} differs from the pretrain run "
+                    f"({pre_axis.get('source')}); spectral_patch encoders are rebuilt per axis"
+                )
 
     if use_line_token and 'libs_dataset' in data:
         ds = data['libs_dataset']
@@ -849,11 +889,13 @@ def main(args):
             config, str(pretrained_checkpoint),
             line_dict_meta=line_dict_meta,
             line_token_meta=line_token_meta,
+            spectral_meta=spectral_meta,
         )
     else:
         print("No pre-trained checkpoint provided, creating fresh model...")
         encoder = create_fresh_model(
             config, line_dict_meta=line_dict_meta, line_token_meta=line_token_meta,
+            spectral_meta=spectral_meta,
         )
 
     # n_elements: prefer config.data.n_elements (set by the libs pipeline path);
@@ -1034,6 +1076,7 @@ def main(args):
         "line_features_path": line_features_path,
         "line_tokens_path": line_tokens_path,
         "spectra_cache_path": spectra_cache_path,
+        "spectral_patch": spectral_patch_run_info(spectral_meta, encoder, args.libs_data_config),
         "split_strategy": split_strategy,
         "model_params": encoder.num_parameters,
         "train_samples": len(train_labels),
@@ -1187,6 +1230,9 @@ def main(args):
     if args.task == 'cf_quantification':
         print(f"  uv run python scripts/evaluate_cf.py --run_dir {run_mgr.run_dir} "
               f"--libs_data_config config/libs_data_measured.yaml")
+    elif spectral_meta is not None:
+        print(f"  test_results in {run_mgr.run_dir / 'run_info.yaml'}; maps of measured rasters: "
+              f"uv run python scripts/predict_mineral_map.py --run_dir {run_mgr.run_dir} --h5 <map.h5>")
     else:
         print(f"  uv run python evaluate_model.py --run_dir {run_mgr.run_dir}")
 

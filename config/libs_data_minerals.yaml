@@ -1,23 +1,18 @@
-# Smoke-test data config for REE minerals on the LIGHTIGO / FireFly instrument.
+# Full data config for REE minerals on the LIGHTIGO / FireFly instrument.
 # physics_version-2 two-zone generator fed by external_data/Source/REE_minerals_oxides.xlsx
 # (element wt% derived from oxide compositions; the generator row-normalises to mass
-# fractions) and the air-wavelength line DB LIBS_data.db. 8 minerals x 12 shots = 96
-# spectra, coarse fine_step_nm for speed.
+# fractions) and the air-wavelength line DB LIBS_data.db. All 62 minerals of the
+# Concentrations sheet x 100 shots = 6,200 spectra, for masked-intensity pre-training
+# and mineral classification (class_label: sample_type). Smoke variant:
+# config/libs_data_minerals_smoke.yaml (same physics, 8 minerals x 12 shots).
 #
-# "Calibrated" against the LIGHTIGO maps of native bismuth and hematite
-# (scripts/calibrate_generator_lightigo.py, 2026-09-24/25):
-#   * wavelength axis = the LIGHTIGO axis of the hematite map matrix_01.h5
-#     (14,905 pixels, 188.6-859.1 nm, five channels; read from the HDF5 file),
-#     so synthetic and measured spectra share their bins;
-#   * core Te 8-11 kK and Ne ~1e16-1e17 cm^-3 measured -> te1 / ne1 ranges lowered;
-#   * instrument Gaussian FWHM 0.15 nm (isolated Bi and Fe lines);
-#   * core column density N*l ~ 5e16 cm^-2 (hematite) -> l_inner_cm raised;
-#   * Stark HWHM ~0.003 nm (unresolved) -> gamma_stark_nm narrowed;
-#   * the cold shell could not be constrained (time-integrated spectra) -> Fe-based
-#     te2_ratio / l_outer_cm ranges kept.
+# Per shot: every element concentration is drawn uniformly from nominal +- the
+# Uncertainties sheet (+-1 % relative where the sheet is empty), then renormalised;
+# core Te1 / Ne1 are drawn from the hematite fit of 2026-09-25 (lamp-corrected,
+# scripts/calibrate_generator_lightigo.py); the other zone ranges follow the smoke config.
 # The spectrometer's spectral response is NOT modelled: synthetic spectra are true
 # relative radiance; correct measured spectra with data/efficiency_correction.py.
-# Cache: synthetic_cache_<key>.h5 (new key: axis, ranges, sample matrix and DB hash).
+# Cache: synthetic_cache_<key>.h5 (key: axis, ranges, sample matrix and DB hash).
 paths:
   db:                "external_data/Source/LIBS_data.db"          # air wavelengths, REE lines included
   sample_matrix:     "external_data/Source/REE_minerals_oxides.xlsx"
@@ -29,11 +24,11 @@ ranges:                       # legacy keys, unused by the v2 generator
   ne: [1.0e+17, 5.0e+17]
 
 generation:
-  n_samples_per_type: 12      # shots per mineral
-  max_sample_types: 8         # first 8 rows of the Concentrations sheet
+  n_samples_per_type: 100     # shots per mineral
+  max_sample_types: null      # all rows of the Concentrations sheet (62)
   number_density:    auto     # quasi-neutrality per zone
   number_density_max: null
-  n_workers:         6
+  n_workers:         22        # machine has 24 cores
   seed:              42
   verbose:           true
 
@@ -51,7 +46,7 @@ generation:
   instrument:
     profile: gaussian
     fwhm_nm: 0.15                # LIGHTIGO: isolated Bi / Fe lines 0.14-0.17 nm
-  fine_step_nm: 0.005         # coarser than the full config (0.002) for speed
+  fine_step_nm: 0.002         # internal radiative-transfer grid (smoke uses 0.005)
   line_window_nm: 0.4
   adaptive_window: true
   min_relative_intensity: 1.0e-7
@@ -62,10 +57,10 @@ generation:
 downstream:
   elements_to_predict: null   # all element columns present in the DB (46)
   class_label: sample_type    # classification = mineral identity (one class per matrix row)
-  n_clusters: 8               # only used when class_label: cluster
-  n_concentration_bins: 50    # tiny for smoke test (full is 1000)
+  n_clusters: 10              # only used when class_label: cluster
+  n_concentration_bins: 1000  # quantification_binned
   splits:
     strategy: random
-    val_fraction: 0.2
-    test_fraction: 0.2
+    val_fraction: 0.15
+    test_fraction: 0.15
     seed: 42

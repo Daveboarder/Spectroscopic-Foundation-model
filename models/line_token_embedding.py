@@ -27,13 +27,26 @@ from data.line_features import FEAT_VALID
 
 
 class DynamicWavelengthEncoding(nn.Module):
-    """Sinusoidal PE from physical wavelength (nm), not bin index."""
+    """Sinusoidal PE from physical wavelength (nm), not bin index.
 
-    def __init__(self, d_model: int, wl_min: float, wl_max: float, dropout: float = 0.1):
+    The wavelength is normalised to [0, 1] over ``wl_min``..``wl_max`` and
+    multiplied by ``scale``, so the finest angular frequency is
+    ``scale / (wl_max - wl_min)`` rad/nm.
+    """
+
+    def __init__(
+        self,
+        d_model: int,
+        wl_min: float,
+        wl_max: float,
+        dropout: float = 0.1,
+        scale: float = 1000.0,
+    ):
         super().__init__()
         self.d_model = d_model
         self.wl_min = wl_min
         self.wl_max = max(wl_max, wl_min + 1e-6)
+        self.scale = float(scale)
         self.dropout = nn.Dropout(p=dropout)
         div_term = torch.exp(
             torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model)
@@ -44,8 +57,8 @@ class DynamicWavelengthEncoding(nn.Module):
         wl_norm = (wavelengths_nm - self.wl_min) / (self.wl_max - self.wl_min)
         wl_norm = wl_norm.clamp(0.0, 1.0)
         pe = torch.zeros(x.size(0), x.size(1), self.d_model, device=x.device, dtype=x.dtype)
-        pe[:, :, 0::2] = torch.sin(wl_norm.unsqueeze(-1) * 1000.0 * self.div_term)
-        pe[:, :, 1::2] = torch.cos(wl_norm.unsqueeze(-1) * 1000.0 * self.div_term)
+        pe[:, :, 0::2] = torch.sin(wl_norm.unsqueeze(-1) * self.scale * self.div_term)
+        pe[:, :, 1::2] = torch.cos(wl_norm.unsqueeze(-1) * self.scale * self.div_term)
         return self.dropout(x + pe)
 
 

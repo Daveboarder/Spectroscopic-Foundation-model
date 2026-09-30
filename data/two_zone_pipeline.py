@@ -46,6 +46,10 @@ Approximations (documented on purpose)
 * Stark widths are not in the DB: one Lorentzian HWHM per zone for all lines.
 * Continuum (bremsstrahlung/recombination) is not modelled unless the
   ``augment.continuum`` knob adds a flat pedestal.
+* The optional ``detector`` block (:func:`apply_detector`) multiplies by a
+  lamp-calibrated spectral sensitivity with a random smooth per-shot error,
+  adds the scattered laser line and clips at a random saturation level; no
+  detector noise or dark offset.
 """
 
 from __future__ import annotations
@@ -54,10 +58,12 @@ import hashlib
 import json
 import multiprocessing as mp
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+import h5py
 import numpy as np
 import pandas as pd
 from scipy.signal import fftconvolve
@@ -81,7 +87,8 @@ from data.libs_pipeline import (
 __all__ = [
     "PHYSICS_VERSION", "DEFAULT_ZONE_CFG", "DEFAULT_INSTRUMENT", "ZoneState",
     "zone_states_from_row", "generate_zone_sample_table", "make_fine_grid",
-    "instrument_kernel", "synthesise_fine_grid", "synthesise_spectrum",
+    "instrument_kernel", "detector_sensitivity", "response_jitter", "apply_detector",
+    "synthesise_fine_grid", "synthesise_spectrum", "load_extra_spectra",
     "generate_zone_spectra", "TwoZoneSyntheticDataset",
     "build_two_zone_dataset_from_config",
 ]
@@ -565,6 +572,102 @@ def apply_instrument(radiance: np.ndarray, kernel: np.ndarray | None) -> np.ndar
     return fftconvolve(radiance, kernel, mode="same")
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Detector model (generation.detector): spectral response, laser line, saturation
+# ─────────────────────────────────────────────────────────────────────────────
+def detector_sensitivity(wavelength: np.ndarray, response_cfg: Mapping[str, Any]) -> np.ndarray:
+    """Relative spectral sensitivity (max = 1) on the spectrometer axis from the
+    two calibration lamps (``data/efficiency_correction``); pixels outside the
+    calibrated range take the nearest calibrated value."""
+    from data.efficiency_correction import RelativeEfficiencyCorrection  # lazy
+
+    root = Path(__file__).resolve().parents[1]
+    files = [Path(response_cfg[k]) for k in ("deuterium_h5", "halogen_h5")]
+    files = [f if f.is_absolute() else root / f for f in files]
+    rec = RelativeEfficiencyCorrection.from_lamp_files(str(files[0]), str(files[1]))
+    wl = np.asarray(wavelength, dtype=np.float64)
+    fac = np.interp(wl, rec.wavelength, rec.factor)  # clamps to the calibrated edges
+    sens = 1.0 / fac
+    return sens / sens.max()
+
+
+def response_jitter(
+    wavelength: np.ndarray, response_cfg: Mapping[str, Any], rng: np.random.Generator
+) -> np.ndarray:
+    """Multiplicative per-shot response error ``10**delta(wavelength)``.
+
+    ``delta`` is drawn at knots every ``jitter_knot_nm`` with standard deviation
+    ``jitter_dex`` (``jitter_dex_untrusted`` inside ``untrusted_nm`` ranges, where
+    the lamp calibration is known to be poor) and interpolated linearly, so the
+    error is smooth on the scale of a line window but varies across the axis.
+    """
+    wl = np.asarray(wavelength, dtype=np.float64)
+    step = float(response_cfg.get("jitter_knot_nm", 25.0))
+    knots = np.arange(wl.min(), wl.max() + step, step)
+    sd = np.full(knots.size, float(response_cfg.get("jitter_dex", 0.0)))
+    for lo, hi in response_cfg.get("untrusted_nm") or ():
+        sd[(knots >= float(lo)) & (knots <= float(hi))] = float(
+            response_cfg.get("jitter_dex_untrusted", sd.max(initial=0.0))
+        )
+    if not np.any(sd > 0):
+        return np.ones_like(wl)
+    return 10.0 ** np.interp(wl, knots, rng.normal(0.0, 1.0, knots.size) * sd)
+
+
+def _log_uniform_draw(rng: np.random.Generator, lo_hi: Sequence[float]) -> float:
+    lo, hi = float(lo_hi[0]), float(lo_hi[1])
+    return float(10.0 ** rng.uniform(np.log10(lo), np.log10(hi)))
+
+
+def apply_detector(
+    spectrum: np.ndarray,
+    wavelength: np.ndarray,
+    detector: Mapping[str, Any],
+    sensitivity: np.ndarray | None,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Radiance on the spectrometer axis -> detector counts in units of the
+    saturation level (1.0 = full well); not normalised.
+
+    Steps, each optional (``generation.detector`` keys):
+      * ``response``: multiply by the lamp sensitivity (``sensitivity``, computed
+        once per dataset by :func:`detector_sensitivity`) times a random smooth
+        response error (:func:`response_jitter`);
+      * ``saturation.log10_peak_over_saturation: [lo, hi]``: scale the spectrum
+        so that its strongest pixel sits ``10**U(lo, hi)`` times the saturation
+        level (without ``saturation`` the peak is set to 1);
+      * ``laser_line``: add the scattered laser light as a Gaussian at
+        ``centre_nm`` with log-uniform ``fwhm_nm`` and ``amplitude`` (in units
+        of the saturation level; it does not pass through the response);
+      * ``saturation``: clip at 1.0.
+    """
+    wl = np.asarray(wavelength, dtype=np.float64)
+    s = np.asarray(spectrum, dtype=np.float64)
+    resp = detector.get("response")
+    if resp:
+        if sensitivity is None:
+            sensitivity = detector_sensitivity(wl, resp)
+        s = s * sensitivity * response_jitter(wl, resp, rng)
+    peak = float(s.max()) if s.size else 0.0
+    if peak <= 0:
+        return s
+    sat = detector.get("saturation")
+    level = 1.0
+    if sat:
+        lo, hi = (float(v) for v in sat["log10_peak_over_saturation"])
+        level = 10.0 ** rng.uniform(lo, hi)
+    s = s * (level / peak)
+    laser = detector.get("laser_line")
+    if laser:
+        amp = _log_uniform_draw(rng, laser["amplitude"])
+        fwhm = _log_uniform_draw(rng, laser["fwhm_nm"])
+        sig = fwhm / (2.0 * np.sqrt(2.0 * np.log(2.0)))
+        s = s + amp * np.exp(-0.5 * ((wl - float(laser["centre_nm"])) / sig) ** 2)
+    if sat:
+        s = np.minimum(s, 1.0)
+    return s
+
+
 def synthesise_spectrum(
     elements: Sequence[str],
     mass_fractions: np.ndarray,
@@ -584,8 +687,10 @@ def synthesise_spectrum(
         db_path:        SQLite line database
         gen_cfg:        {fine_step_nm, line_window_nm, min_relative_intensity,
                          adaptive_window, instrument: {profile, fwhm_nm},
-                         augment: {noise_sigma, continuum}}
-        rng:            only used when ``augment.noise_sigma > 0``
+                         detector: {response, saturation, laser_line} (see
+                         :func:`apply_detector`), sensitivity (precomputed
+                         :func:`detector_sensitivity`), augment: {noise_sigma, continuum}}
+        rng:            used by ``detector`` and ``augment.noise_sigma > 0``
     """
     gc = dict(gen_cfg or {})
     fine_step = float(gc.get("fine_step_nm", DEFAULT_FINE_STEP_NM))
@@ -601,6 +706,9 @@ def synthesise_spectrum(
     )
     radiance = apply_instrument(radiance, instrument_kernel(fine_step, gc.get("instrument", DEFAULT_INSTRUMENT)))
     spectrum = np.interp(np.asarray(wavelength, dtype=np.float64), grid, radiance)
+    if gc.get("detector"):
+        rng = rng or np.random.default_rng()
+        spectrum = apply_detector(spectrum, wavelength, gc["detector"], gc.get("sensitivity"), rng)
 
     aug = {**DEFAULT_AUGMENT, **(gc.get("augment") or {})}
     peak = float(spectrum.max()) if spectrum.size else 0.0
@@ -683,6 +791,58 @@ def generate_zone_spectra(
 # ─────────────────────────────────────────────────────────────────────────────
 # Dataset wrapper (same HDF5 layout / cache dir as SyntheticLIBSDataset)
 # ─────────────────────────────────────────────────────────────────────────────
+def _file_md5(path: Path) -> str:
+    h = hashlib.md5()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def _resolve(path: str | Path) -> Path:
+    p = Path(path).expanduser()
+    return p if p.is_absolute() else Path(__file__).resolve().parents[1] / p
+
+
+def load_extra_spectra(
+    entry: Mapping[str, Any], wavelength: np.ndarray, columns: Sequence[str]
+) -> tuple[pd.DataFrame, np.ndarray]:
+    """Measured spectra of an extra class (``extra_spectra`` item of the data
+    config) as sample-table rows + unit-normalised spectra.
+
+    ``entry = {path, label[, composition]}``; ``path`` is an HDF5 file with
+    ``wavelength`` [n_px] and ``spectra`` [n, n_px] (raw counts) on the
+    generator's spectrometer axis, as written by
+    ``scripts/extract_measured_class.py``.  ``composition`` (mass fractions,
+    renormalised) fills the element columns; every zone column is zero, so the
+    rows carry no plasma labels (``has_plasma_labels == 0``).
+    """
+    label = str(entry["label"])
+    with h5py.File(_resolve(entry["path"]), "r") as f:
+        wl = f["wavelength"][...].astype(np.float64)
+        raw = f["spectra"][...].astype(np.float64)
+    if wl.size != len(wavelength) or not np.allclose(wl, wavelength, atol=1e-3):
+        raise ValueError(
+            f"extra_spectra {entry['path']}: wavelength axis differs from the generator axis "
+            f"({wl.size} vs {len(wavelength)} px) - set paths.wavelength_json to the same instrument"
+        )
+    spectra = np.stack([unit_norm(r) for r in raw]).astype(np.float32)
+    n = len(spectra)
+    comp = {str(k): float(v) for k, v in (entry.get("composition") or {}).items()}
+    total = sum(comp.values())
+    sid = re.sub(r"[^A-Za-z0-9]+", "_", label).strip("_").upper()
+    table = pd.DataFrame(0.0, index=range(n), columns=list(columns))
+    table["sample_type_id"] = sid
+    table["sample_type_name"] = label
+    table["unique_id"] = [f"{sid}_{i + 1:04d}" for i in range(n)]
+    table["plasma_model"] = "measured"
+    for el, v in comp.items():
+        if el not in table.columns:
+            raise ValueError(f"extra_spectra {label}: element {el} is not an element column")
+        table[el] = v / total if total > 0 else 0.0
+    return table[list(columns)], spectra
+
+
 class TwoZoneSyntheticDataset(SyntheticLIBSDataset):
     """Physics-version-2 synthetic dataset. Same ``synthetic_cache_<key>.h5``
     layout as the legacy class (``spectra`` + ``sample_table`` group, string
@@ -706,6 +866,8 @@ class TwoZoneSyntheticDataset(SyntheticLIBSDataset):
         min_relative_intensity: float = DEFAULT_MIN_RELATIVE_INTENSITY,
         adaptive_window: bool = DEFAULT_ADAPTIVE_WINDOW,
         augment: dict[str, float] | None = None,
+        detector: dict[str, Any] | None = None,
+        extra_spectra: Sequence[Mapping[str, Any]] | None = None,
         n_workers: int = 1,
         cache_dir: str | None = None,
         seed: int = 42,
@@ -726,6 +888,13 @@ class TwoZoneSyntheticDataset(SyntheticLIBSDataset):
         self.min_relative_intensity = float(min_relative_intensity)
         self.adaptive_window = bool(adaptive_window)
         self.augment = {k: float(v) for k, v in {**DEFAULT_AUGMENT, **(augment or {})}.items()}
+        self.detector = dict(detector or {})
+        self.extra_spectra = [dict(e) for e in (extra_spectra or [])]
+        # lamp sensitivity: computed once here, shipped to the workers via gen_cfg
+        self.sensitivity = (
+            detector_sensitivity(wavelength, self.detector["response"])
+            if self.detector.get("response") else None
+        )  # fmt: skip
         n_density = float(number_density) if not isinstance(number_density, str) else 0.0
         super().__init__(
             sample_types=sample_types,
@@ -751,11 +920,31 @@ class TwoZoneSyntheticDataset(SyntheticLIBSDataset):
             "adaptive_window": self.adaptive_window,
             "instrument": dict(self.instrument),
             "augment": dict(self.augment),
+            "detector": dict(self.detector),
+            "sensitivity": self.sensitivity,
             "seed": self.seed,
         }
 
     @property
     def cache_key(self) -> str:
+        """Key of the whole dataset (synthetic + ``extra_spectra``): names the
+        splits and the line-feature / token caches built from it."""
+        if not self.extra_spectra:
+            return self.synthetic_cache_key
+        extras = [
+            {**{k: v for k, v in e.items() if k != "path"}, "md5": _file_md5(_resolve(e["path"]))}
+            for e in self.extra_spectra
+        ]
+        blob = json.dumps({"synthetic": self.synthetic_cache_key, "extra_spectra": extras},
+                          sort_keys=True, default=str)  # fmt: skip
+        return hashlib.md5(blob.encode()).hexdigest()[:12]
+
+    def _cache_path(self) -> str:
+        """The HDF5 cache holds the synthetic spectra only; extras are appended on load."""
+        return os.path.join(self.cache_dir, f"synthetic_cache_{self.synthetic_cache_key}.h5")
+
+    @property
+    def synthetic_cache_key(self) -> str:
         cfg = {
             "physics_version": PHYSICS_VERSION,
             "sample_types": self.sample_types,
@@ -778,9 +967,31 @@ class TwoZoneSyntheticDataset(SyntheticLIBSDataset):
             "seed": self.seed,
             **line_db_cache_key(self.db_path),
         }
+        if self.detector:  # absent key keeps the hashes of caches built before the detector model
+            det = json.loads(json.dumps(self.detector, default=str))
+            resp = det.get("response")
+            if resp:
+                resp["lamp_md5"] = [
+                    _file_md5(_resolve(resp[k])) for k in ("deuterium_h5", "halogen_h5")
+                ]
+            cfg["detector"] = det
         return hashlib.md5(json.dumps(cfg, sort_keys=True, default=str).encode()).hexdigest()[:12]
 
     def _build(self) -> tuple[pd.DataFrame, np.ndarray]:
+        table, spectra = self._build_synthetic()
+        if not self.extra_spectra or table.empty:
+            return table, spectra
+        tables, arrays = [table], [np.asarray(spectra, dtype=np.float32)]
+        for entry in self.extra_spectra:
+            t, x = load_extra_spectra(entry, self.wavelength, list(table.columns))
+            tables.append(t)
+            arrays.append(x)
+            if self.verbose:
+                print(f"Appended {len(t)} measured spectra of class {entry['label']!r} "
+                      f"({entry['path']})")  # fmt: skip
+        return pd.concat(tables, ignore_index=True), np.concatenate(arrays, axis=0)
+
+    def _build_synthetic(self) -> tuple[pd.DataFrame, np.ndarray]:
         cache = self._cache_path()
         if os.path.isfile(cache):
             if self.verbose:
@@ -878,6 +1089,8 @@ def build_two_zone_dataset_from_config(cfg: dict) -> TwoZoneSyntheticDataset:
         min_relative_intensity=float(gen.get("min_relative_intensity", DEFAULT_MIN_RELATIVE_INTENSITY)),
         adaptive_window=bool(gen.get("adaptive_window", DEFAULT_ADAPTIVE_WINDOW)),
         augment=gen.get("augment"),
+        detector=gen.get("detector"),
+        extra_spectra=cfg.get("extra_spectra"),
         n_workers=int(gen.get("n_workers", 1)),
         cache_dir=cache_dir,
         seed=int(gen.get("seed", 42)),

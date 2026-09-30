@@ -1,0 +1,80 @@
+# Smoke variant of config/libs_data_minerals_avantes.yaml: same detector model
+# and epoxy class, 8 minerals x 12 shots, coarse fine_step_nm.
+paths:
+  db:                "external_data/Source/LIBS_data.db"          # air wavelengths, REE lines included
+  sample_matrix:     "external_data/Source/REE_minerals_oxides.xlsx"
+  wavelength_json:   "/mnt/data/projects/Running_projects/24_0010_Minerals_classification/Data/MAR1A/LIBS/Mar1A.h5"   # Avantes axis (first measurement's libs/calibration)
+  cache_dir:         "external_data/cache"
+
+ranges:                       # legacy keys, unused by the v2 generator
+  te: [6500.0, 11000.0]
+  ne: [1.0e+17, 5.0e+17]
+
+generation:
+  n_samples_per_type: 12      # shots per mineral
+  max_sample_types: 8         # first 8 rows of the Concentrations sheet
+  number_density:    auto     # quasi-neutrality per zone
+  number_density_max: null
+  n_workers:         6
+  seed:              42
+  verbose:           true
+
+  plasma_model: two_zone      # every shot: hot core + cool shell (mirrors config/libs_data.yaml)
+  outer_density: isobaric
+  two_zone_fraction: 0.7      # mixed only; ignored under two_zone
+  zones:
+    te1: [12000, 13000]          # K; hematite fit 2026-09-25 (lamp-corrected): ~12.6 kK
+    ne1: [2.9e+17, 3.1e+17]      # cm^-3, log-uniform; hematite fit 2026-09-25: ~3e17
+    te2_ratio: [0.15, 0.6]       # unconstrained by the time-integrated data; Fe-based
+    ne2_log_ratio: [-3, -1]      # only used when outer_density: quasi_neutral
+    l_inner_cm: [0.01, 0.5]      # log-uniform; hematite N*l ~5e16-8e16 cm^-2
+    l_outer_cm: [2.0e-5, 2.0e-3]  # log-uniform; Fe-based (shell unconstrained)
+    gamma_stark_nm: [0.002, 0.01] # Lorentz HWHM; fits ~0.003 nm
+  instrument:
+    profile: gaussian
+    fwhm_nm: 0.15                # LIGHTIGO: isolated Bi / Fe lines 0.14-0.17 nm
+
+  # Detector model (data/two_zone_pipeline.apply_detector), measured on Mar1A.h5
+  # (Outputs/pca_kmeans_Mar1A, 2026-09-30): the same Avantes spectrometers as the
+  # 2024 FireFly lamp calibration (identical pixel spacing, Mar1A = first 13,213 px).
+  detector:
+    response:                        # sensitivity = 1 / lamp correction factor (max 1)
+      deuterium_h5: external_data/Data/DeuteriumWithCorrection.h5
+      halogen_h5: external_data/Data/HalogenWithCorrection.h5
+      jitter_knot_nm: 25             # random smooth response error, one knot per 25 nm
+      jitter_dex: 0.1                # 1-sigma where the lamp curve is trustworthy
+      jitter_dex_untrusted: 0.3      # lamp signal at the noise floor: 0.3-0.7 dex off vs hematite fit
+      untrusted_nm: [[188, 260], [370, 460]]
+    saturation:
+      log10_peak_over_saturation: [-0.7, 1.0]   # 59 % of Mar1A rock shots saturated; unsaturated peaks 0.2-0.97 of full well
+    laser_line:                      # scattered 266 nm light, ~9,000 counts = 0.14 of full well
+      centre_nm: 266.18
+      fwhm_nm: [0.13, 0.6]           # log-uniform
+      amplitude: [0.05, 0.4]         # of the saturation level, log-uniform
+  fine_step_nm: 0.005         # coarser than the full config (0.002) for speed
+  line_window_nm: 0.4
+  adaptive_window: true
+  min_relative_intensity: 1.0e-7
+  augment:
+    noise_sigma: 0.0
+    continuum: 0.0
+
+# Measured spectra added as their own class (data/two_zone_pipeline.load_extra_spectra).
+# Mar1A epoxy embedding: k-means clusters 4-9 of 1,000 random shots
+# (scripts/compare_measured_synthetic_pca.py -> scripts/extract_measured_class.py);
+# peaks ~110-535 counts, N II air-plasma lines, no sample. Composition: epoxy resin.
+extra_spectra:
+  - path: external_data/Data/Mar1A_epoxid.h5
+    label: epoxid
+    composition: {C: 0.75, H: 0.07, O: 0.18}
+
+downstream:
+  elements_to_predict: null   # all element columns present in the DB (46)
+  class_label: sample_type    # classification = mineral identity (one class per matrix row) + epoxid
+  n_clusters: 8               # only used when class_label: cluster
+  n_concentration_bins: 50    # tiny for smoke test (full is 1000)
+  splits:
+    strategy: random
+    val_fraction: 0.2
+    test_fraction: 0.2
+    seed: 42
