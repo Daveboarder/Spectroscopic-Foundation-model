@@ -16,6 +16,7 @@ from models.spectral_patch_embedding import (
     axis_signature,
     detector_segment_bounds,
     spectral_meta_from_config,
+    spectral_patch_run_info,
     stitched_mask,
 )
 from training.finetune import LIBSFinetuneModule
@@ -184,3 +185,57 @@ def test_dynamic_wavelength_encoding_default_scale_unchanged():
     div = torch.exp(torch.arange(0, 8, 2).float() * (-math.log(10000.0) / 8))
     assert torch.allclose(got[..., 0::2], torch.sin(norm.unsqueeze(-1) * 1000.0 * div), atol=1e-6)
     assert torch.allclose(got[..., 1::2], torch.cos(norm.unsqueeze(-1) * 1000.0 * div), atol=1e-6)
+
+
+def _canonical_model() -> LIBSTransformer:
+    meta = spectral_meta_from_config(
+        {"patch": {**CFG, "preprocess": "canonical", "input_scale": 1.0}}, WL
+    )
+    return LIBSTransformer(
+        n_bins=WL.size, d_model=16, n_heads=2, n_layers=1, d_ff=32, dropout=0.0,
+        embedding_type="spectral_patch", spectral_meta=meta,
+    )  # fmt: skip
+
+
+def test_canonical_mode_takes_values_and_mask():
+    m = _canonical_model()
+    x = torch.rand(2, 2 * WL.size)
+    x[:, WL.size :] = (x[:, WL.size :] > 0.99).float()  # a saturation mask half
+    out = m(x)
+    assert out["mip_predictions"].shape == (2, m.embedding.n_tokens, CFG["n_samples"])
+    with pytest.raises(ValueError, match="canonical input"):
+        m(torch.rand(2, WL.size))  # unit-normalised input is rejected loudly
+    assert "canonical" not in spectral_meta_from_config(
+        {"patch": {"canonical": {"k_sigma": 3}}}, WL
+    )
+
+
+def test_canonical_flags_are_the_mask_and_masking_hides_both_halves():
+    emb = _canonical_model().embedding
+    emb.eval()
+    x = torch.zeros(1, 2 * WL.size)
+    x[0, : WL.size] = 0.3
+    base = emb(x)
+    y = x.clone()
+    y[0, WL.size + 100 : WL.size + 110] = 1.0  # flags set, values unchanged
+    assert not torch.equal(base, emb(y))  # the mask half reaches the tokens
+    tm = torch.zeros(1, emb.n_tokens, dtype=torch.bool)
+    tm[0, emb.n_tokens // 2] = True
+    hidden = emb.px_stitched[emb.pixel_mask(tm)[0]]
+    a, b = x.clone(), x.clone()
+    b[0, hidden] = 0.9  # hidden values
+    b[0, WL.size + hidden] = 1.0  # hidden flags
+    assert torch.equal(emb(a, token_mask=tm), emb(b, token_mask=tm))
+
+
+def test_canonical_run_info_and_old_checkpoints():
+    m = _canonical_model()
+    info = spectral_patch_run_info(
+        spectral_meta_from_config({"patch": {**CFG, "preprocess": "canonical"}}, WL), m, None,
+        input_spec={"preprocess": "canonical", "canonical": {"k_sigma": 3.0, "blank_nm": [[265.4, 267.0]]}},
+        input_units="full_well",
+    )  # fmt: skip
+    assert info["preprocess"] == "canonical" and info["input_units"] == "full_well"
+    assert info["canonical"]["blank_nm"] == [[265.4, 267.0]]
+    old = _model()  # a 'none' model: same parameters, so its state_dict loads strictly
+    m.load_state_dict(old.state_dict(), strict=True)

@@ -28,6 +28,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from data.canonical import require_unit_norm
 from data.libs_pipeline import build_dataset_from_config
 from data.line_embedding_pipeline import prepare_line_tokens_assets
 
@@ -49,6 +50,7 @@ def main() -> None:
     libs_cfg.setdefault("generation", {}).setdefault("seed", args.seed)
 
     ds = build_dataset_from_config(libs_cfg)
+    require_unit_norm(ds, "build_line_tokens")
     if len(ds) == 0:
         raise SystemExit("LIBS pipeline produced no spectra — check configs.")
 

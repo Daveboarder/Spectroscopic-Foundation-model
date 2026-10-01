@@ -1,5 +1,10 @@
-# Smoke variant of config/libs_data_minerals_avantes.yaml: same detector model
-# and epoxy class, 8 minerals x 12 shots, coarse fine_step_nm.
+# = config/libs_data_minerals_avantes.yaml with the synthetic spectra kept in FULL-WELL UNITS
+# (generation.detector.output_units: full_well) instead of unit-normalised, and the measured
+# epoxid rows divided by full_well_counts. The absolute scale lets the canonical input
+# (data/canonical.py, model.patch.preprocess: canonical) apply the real noise floor to
+# synthetic spectra in the same units as to measured counts (the detection limit).
+# Same draws as the unit-normalised cache: unit_norm(these spectra) == its rows.
+# Smoke variant: config/libs_data_minerals_avantes_fw_smoke.yaml.
 paths:
   db:                "external_data/Source/LIBS_data.db"          # air wavelengths, REE lines included
   sample_matrix:     "external_data/Source/REE_minerals_oxides.xlsx"
@@ -11,11 +16,11 @@ ranges:                       # legacy keys, unused by the v2 generator
   ne: [1.0e+17, 5.0e+17]
 
 generation:
-  n_samples_per_type: 12      # shots per mineral
-  max_sample_types: 8         # first 8 rows of the Concentrations sheet
+  n_samples_per_type: 100     # shots per mineral
+  max_sample_types: null      # all rows of the Concentrations sheet (62)
   number_density:    auto     # quasi-neutrality per zone
   number_density_max: null
-  n_workers:         6
+  n_workers:         22        # machine has 24 cores
   seed:              42
   verbose:           true
 
@@ -50,6 +55,8 @@ generation:
   # (Outputs/pca_kmeans_Mar1A, 2026-09-30): the same Avantes spectrometers as the
   # 2024 FireFly lamp calibration (identical pixel spacing, Mar1A = first 13,213 px).
   detector:
+    output_units: full_well        # keep the absolute scale (fraction of full well)
+    full_well_counts: 64900        # Avantes/FireFly plateau (Mar1A 64,850-64,950 counts)
     response:                        # sensitivity = 1 / lamp correction factor (max 1)
       deuterium_h5: external_data/Data/DeuteriumWithCorrection.h5
       halogen_h5: external_data/Data/HalogenWithCorrection.h5
@@ -65,7 +72,7 @@ generation:
       centre_nm: 266.18
       fwhm_nm: [0.13, 0.6]           # log-uniform
       amplitude: [0.05, 0.4]         # of the saturation level, log-uniform
-  fine_step_nm: 0.005         # coarser than the full config (0.002) for speed
+  fine_step_nm: 0.002         # internal radiative-transfer grid (smoke uses 0.005)
   line_window_nm: 0.4
   adaptive_window: true
   min_relative_intensity: 1.0e-7
@@ -85,10 +92,10 @@ extra_spectra:
 downstream:
   elements_to_predict: null   # all element columns present in the DB (46)
   class_label: sample_type    # classification = mineral identity (one class per matrix row) + epoxid
-  n_clusters: 8               # only used when class_label: cluster
-  n_concentration_bins: 50    # tiny for smoke test (full is 1000)
+  n_clusters: 10              # only used when class_label: cluster
+  n_concentration_bins: 1000  # quantification_binned
   splits:
     strategy: random
-    val_fraction: 0.2
-    test_fraction: 0.2
+    val_fraction: 0.15
+    test_fraction: 0.15
     seed: 42

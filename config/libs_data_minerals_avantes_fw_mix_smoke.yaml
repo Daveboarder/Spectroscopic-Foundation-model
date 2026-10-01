@@ -1,5 +1,4 @@
-# Smoke variant of config/libs_data_minerals_avantes.yaml: same detector model
-# and epoxy class, 8 minerals x 12 shots, coarse fine_step_nm.
+# Smoke variant of config/libs_data_minerals_avantes_fw_mix.yaml.
 paths:
   db:                "external_data/Source/LIBS_data.db"          # air wavelengths, REE lines included
   sample_matrix:     "external_data/Source/REE_minerals_oxides.xlsx"
@@ -50,6 +49,8 @@ generation:
   # (Outputs/pca_kmeans_Mar1A, 2026-09-30): the same Avantes spectrometers as the
   # 2024 FireFly lamp calibration (identical pixel spacing, Mar1A = first 13,213 px).
   detector:
+    output_units: full_well        # keep the absolute scale (fraction of full well)
+    full_well_counts: 64900        # Avantes/FireFly plateau (Mar1A 64,850-64,950 counts)
     response:                        # sensitivity = 1 / lamp correction factor (max 1)
       deuterium_h5: external_data/Data/DeuteriumWithCorrection.h5
       halogen_h5: external_data/Data/HalogenWithCorrection.h5
@@ -65,6 +66,10 @@ generation:
       centre_nm: 266.18
       fwhm_nm: [0.13, 0.6]           # log-uniform
       amplitude: [0.05, 0.4]         # of the saturation level, log-uniform
+  mixtures:                   # boundary classes "A + B" (see libs_data_minerals_avantes_fw_mix.yaml)
+    minerals: ["Monazite-(Ce)", "Bastnäsite-(Ce)", "Xenotime-(Y)"]   # among the first 8 rows
+    n_samples_per_pair: 4
+    fraction: [0.2, 0.8]
   fine_step_nm: 0.005         # coarser than the full config (0.002) for speed
   line_window_nm: 0.4
   adaptive_window: true

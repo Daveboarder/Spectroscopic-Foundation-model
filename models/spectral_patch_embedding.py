@@ -43,7 +43,8 @@ import torch.nn.functional as F
 
 from .line_token_embedding import DynamicWavelengthEncoding
 
-DEFAULT_PATCH_CFG: dict[str, float] = {
+DEFAULT_PATCH_CFG: dict[str, Any] = {
+    "preprocess": "none",  # none: unit-normalised input | canonical: data.canonical.patch_input
     "window_nm": 1.0,  # window width (nm)
     "stride_nm": 0.5,  # centre spacing (nm); windows overlap by window - stride
     "n_samples": 48,  # interpolation points per window
@@ -106,8 +107,12 @@ def patch_config(model_cfg: Mapping[str, Any] | None) -> dict[str, float]:
 def spectral_meta_from_config(
     model_cfg: Mapping[str, Any] | None, wavelength: np.ndarray, **overrides: Any
 ) -> dict[str, Any]:
-    """``spectral_meta`` for ``LIBSTransformer(embedding_type='spectral_patch')``."""
-    return {**patch_config(model_cfg), **overrides, "wavelength": np.asarray(wavelength)}
+    """``spectral_meta`` for ``LIBSTransformer(embedding_type='spectral_patch')``: the
+    embedding's constructor arguments. The data-side ``canonical`` constants of
+    ``model.patch`` are not part of it (see data.canonical.resolve_spec)."""
+    meta = {**patch_config(model_cfg), **overrides, "wavelength": np.asarray(wavelength)}
+    meta.pop("canonical", None)
+    return meta
 
 
 def wavelength_from_run_info(run_info: Mapping[str, Any], root: str | Path = ".") -> np.ndarray:
@@ -131,11 +136,17 @@ def wavelength_from_run_info(run_info: Mapping[str, Any], root: str | Path = "."
 
 
 def spectral_patch_run_info(
-    spectral_meta: Mapping[str, Any] | None, model: nn.Module, libs_data_config: str | None
+    spectral_meta: Mapping[str, Any] | None,
+    model: nn.Module,
+    libs_data_config: str | None,
+    input_spec: Mapping[str, Any] | None = None,
+    input_units: str | None = None,
 ) -> dict[str, Any] | None:
-    """``spectral_patch`` block of run_info.yaml: window settings, token count and the
-    training wavelength axis (source file + signature), from which consumers rebuild
-    the embedding (:func:`wavelength_from_run_info`). None for other embedding types."""
+    """``spectral_patch`` block of run_info.yaml: window settings, token count, the input
+    preprocessing (``preprocess``, and for canonical input the constants of
+    data.canonical plus the units of the training spectra) and the training wavelength
+    axis (source file + signature), from which consumers rebuild the embedding
+    (:func:`wavelength_from_run_info`) and its input. None for other embedding types."""
     if spectral_meta is None:
         return None
     import yaml  # lazy
@@ -149,8 +160,18 @@ def spectral_patch_run_info(
         k: float(v) for k, v in spectral_meta.items()
         if k != "wavelength" and isinstance(v, (int, float))
     }  # fmt: skip
+    preprocess = str(spectral_meta.get("preprocess", "none"))
+    extra: dict[str, Any] = {"preprocess": preprocess}
+    if input_units:
+        extra["input_units"] = str(input_units)
+    if preprocess == "canonical" and input_spec is not None:
+        extra["canonical"] = {
+            k: ([list(x) for x in v] if k == "blank_nm" else (list(v) if isinstance(v, (list, tuple)) else v))
+            for k, v in dict(input_spec.get("canonical") or {}).items()
+        }  # fmt: skip
     return {
         **settings,
+        **extra,
         "n_samples": int(emb.n_samples),
         "min_saturated_px": int(emb.min_saturated_px),
         "n_segments": int(emb.n_segments),
@@ -167,6 +188,10 @@ class SpectralPatchEmbedding(nn.Module):
         wavelength:        spectrometer axis [n_px] in nm (may be non-monotonic)
         window_nm, stride_nm, n_samples, input_scale, saturation_level,
         min_saturated_px, pe_scale, pe_wl_min, pe_wl_max: see DEFAULT_PATCH_CFG
+        preprocess:        'none' (unit-normalised spectra [B, n_px], saturation flags
+                           from '>= min_saturated_px pixels >= saturation_level') or
+                           'canonical' (data.canonical.patch_input output [B, 2 n_px] =
+                           [canonical spectrum, saturation mask]; the flags are the mask)
         n_segments:        size of the detector-segment table (default: segments
                            of ``wavelength``; pass the training value when the
                            embedding is rebuilt on another axis)
@@ -193,6 +218,7 @@ class SpectralPatchEmbedding(nn.Module):
         pe_wl_max: float = 900.0,
         n_segments: Optional[int] = None,
         dropout: float = 0.1,
+        preprocess: str = "none",
     ):
         super().__init__()
         wl = np.asarray(wavelength, dtype=np.float64).reshape(-1)
@@ -206,6 +232,9 @@ class SpectralPatchEmbedding(nn.Module):
         self.input_scale = float(input_scale)
         self.saturation_level = float(saturation_level)
         self.min_saturated_px = int(min_saturated_px)
+        if preprocess not in ("none", "canonical"):
+            raise ValueError(f"preprocess must be none|canonical, got {preprocess!r}")
+        self.preprocess = str(preprocess)
         if self.window_nm <= 0 or self.stride_nm <= 0 or self.n_samples < 2:
             raise ValueError("window_nm and stride_nm must be > 0 and n_samples >= 2")
 
@@ -293,9 +322,21 @@ class SpectralPatchEmbedding(nn.Module):
         saturated = at_level.sum(dim=1, keepdim=True) >= self.min_saturated_px
         return (at_level & saturated).float()
 
+    def _split(self, x: torch.Tensor) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
+        """(values [B, n_px], saturation mask [B, n_px] or None) of the model input."""
+        if self.preprocess == "canonical":
+            if x.dim() != 2 or x.size(1) != 2 * self.n_px:
+                raise ValueError(
+                    f"canonical input must be [B, {2 * self.n_px}] = [values, saturation mask] "
+                    f"(data.canonical.patch_input), got {tuple(x.shape)}"
+                )
+            return x[:, : self.n_px], x[:, self.n_px :]
+        return x, None
+
     def window_targets(self, x: torch.Tensor) -> torch.Tensor:
         """Clean transformed windows [B, T, n_samples] (masked-window reconstruction target)."""
-        return self.transform(self._windows(self._stitched(x)))
+        values, _ = self._split(x)
+        return self.transform(self._windows(self._stitched(values)))
 
     # ── masking ──
     def sample_token_mask(
@@ -338,13 +379,18 @@ class SpectralPatchEmbedding(nn.Module):
 
     # ── forward ──
     def forward(self, x: torch.Tensor, token_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
-        xs = self._stitched(x)
+        values, sat = self._split(x)
+        xs = self._stitched(values)
+        ms = self._stitched(sat) if sat is not None else None
         if token_mask is not None:
             token_mask = token_mask.to(device=xs.device, dtype=torch.bool)
-            xs = xs.masked_fill(self.pixel_mask(token_mask), 0.0)
-        # flags from the visible pixels only: the per-spectrum plateau count must not
-        # see pixels hidden by masked windows
-        flags = self.saturation_flags(xs)
+            hidden = self.pixel_mask(token_mask)
+            xs = xs.masked_fill(hidden, 0.0)
+            ms = ms.masked_fill(hidden, 0.0) if ms is not None else None
+        # canonical input carries a per-pixel saturation mask; otherwise the flags come
+        # from the visible pixels only, so the per-spectrum plateau count never sees
+        # pixels hidden by masked windows
+        flags = ms if ms is not None else self.saturation_flags(xs)
         feats = torch.cat([self.transform(self._windows(xs)), self._windows(flags)], dim=-1)
         h = self.patch_proj(feats) + self.segment_embedding(self.token_segment)
         B, T = h.shape[0], h.shape[1]

@@ -44,12 +44,24 @@ Approximations (documented on purpose)
   that the wings are truncated.
 * Only ionisation stages I and II exist in the DB (no stage III at 20 kK).
 * Stark widths are not in the DB: one Lorentzian HWHM per zone for all lines.
+  With ``generation.stark.hydrogen: gigosos2003`` the H I Balmer lines instead get
+  their Ne-dependent Stark width per zone (:func:`plasma_physics.balmer_stark_hwhm_nm`,
+  H alpha FWHM ~2.3 nm at 3e17 cm^-3) and a +-20 HWHM window.
+* The instrument kernel is one Gaussian (or Voigt) FWHM, or one per wavelength
+  range with ``instrument.fwhm_ranges_nm`` (e.g. per spectrometer channel).
+* Optional ``generation.mixtures`` adds boundary classes ``"A + B"``: the radiances
+  of one cached pure shot of A and one of B (two plasmas side by side, no mixing of
+  the material) are added with area fraction ``w`` of A before the detector model,
+  so saturation and the laser line act on the sum (:func:`build_mixture_table`).
 * Continuum (bremsstrahlung/recombination) is not modelled unless the
   ``augment.continuum`` knob adds a flat pedestal.
 * The optional ``detector`` block (:func:`apply_detector`) multiplies by a
   lamp-calibrated spectral sensitivity with a random smooth per-shot error,
   adds the scattered laser line and clips at a random saturation level; no
-  detector noise or dark offset.
+  detector noise or dark offset. With ``detector.output_units: full_well`` the
+  spectrum keeps that absolute scale (not unit-normalised) for the canonical
+  input of data/canonical.py, which removes the measured nuisance instead of
+  simulating it.
 """
 
 from __future__ import annotations
@@ -66,6 +78,7 @@ from typing import Any, Mapping, Sequence
 import h5py
 import numpy as np
 import pandas as pd
+from scipy.ndimage import uniform_filter1d
 from scipy.signal import fftconvolve
 
 from data import plasma_physics as pp
@@ -111,6 +124,11 @@ DEFAULT_LINE_WINDOW_NM = 0.4
 DEFAULT_MIN_RELATIVE_INTENSITY = 1e-7
 DEFAULT_ADAPTIVE_WINDOW = True
 ADAPTIVE_WINDOW_MAX_DOUBLINGS = 3        # window <= 8 x line_window_nm
+STARK_MODELS = {"hydrogen": ("gigosos2003",)}   # generation.stark: {key: model}
+MIXTURE_KEYS = {"minerals", "pairs", "n_samples_per_pair", "fraction"}  # generation.mixtures
+MIXTURE_SEED_OFFSET = 500_009            # detector draws of mixture shots: own random stream
+STARK_HALF_WINDOW_HWHM = 20.0            # Balmer window: +-20 HWHM (97 % of a Lorentzian)
+STARK_MAX_HALF_WINDOW_NM = 40.0
 FINE_GRID_PAD_NM = 1.0
 _MAX_PROFILE_BLOCK = 4_000_000   # max (n_lines x n_window) elements evaluated at once
 
@@ -399,7 +417,7 @@ def instrument_kernel(fine_step_nm: float, instrument: Mapping[str, Any] | None)
 
 
 def _line_half_widths(
-    tau0: np.ndarray, gamma_nm: float, line_window_nm: float, adaptive: bool,
+    tau0: np.ndarray, gamma_nm: float | np.ndarray, line_window_nm: float, adaptive: bool,
 ) -> np.ndarray:
     """Per-line half window [nm]. Thin lines use ``line_window_nm``; when
     ``adaptive`` is set, saturated lines get the window doubled (at most
@@ -409,7 +427,7 @@ def _line_half_widths(
     n = tau0.size
     if not adaptive or n == 0:
         return np.full(n, float(line_window_nm))
-    need = 10.0 * float(gamma_nm) * np.sqrt(np.maximum(tau0, 1.0))
+    need = 10.0 * np.asarray(gamma_nm, dtype=np.float64) * np.sqrt(np.maximum(tau0, 1.0))
     k = np.ceil(np.log2(np.maximum(need / line_window_nm, 1.0)))
     k = np.clip(k, 0, ADAPTIVE_WINDOW_MAX_DOUBLINGS)
     return float(line_window_nm) * 2.0 ** k
@@ -420,7 +438,7 @@ def _accumulate_line_profiles(
     fine_step_nm: float,
     wl_nm: np.ndarray,
     sigma_nm: np.ndarray,
-    gamma_nm: float,
+    gamma_nm: float | np.ndarray,
     kappa_int: np.ndarray,
     eps_int: np.ndarray,
     half_width_nm: np.ndarray | float,
@@ -428,7 +446,8 @@ def _accumulate_line_profiles(
     """kappa(lambda) [cm^-1] and eps(lambda) [per cm] on the fine grid from
     per-line integrated coefficients, each line spread with its Voigt profile
     inside ``+-half_width_nm`` (searchsorted windows, vectorised over lines;
-    lines sharing a half width are processed as one block)."""
+    lines sharing a half width are processed as one block).  ``gamma_nm`` is one
+    Lorentzian HWHM for all lines or one per line."""
     n_grid = grid.size
     kappa = np.zeros(n_grid, dtype=np.float64)
     eps = np.zeros(n_grid, dtype=np.float64)
@@ -449,7 +468,8 @@ def _accumulate_line_profiles(
             valid = idx < n_grid
             idx = np.minimum(idx, n_grid - 1)
             dl = grid[idx] - wl[:, None]
-            phi = pp.voigt_profile(dl, sigma_nm[ids, None], gamma_nm)   # per nm
+            g = gamma_nm if np.ndim(gamma_nm) == 0 else np.asarray(gamma_nm)[ids, None]
+            phi = pp.voigt_profile(dl, sigma_nm[ids, None], g)          # per nm
             phi = np.where(valid, phi, 0.0) / pp.NM_TO_CM                 # per cm
             flat = idx.ravel()
             kappa += np.bincount(flat, weights=(kappa_int[ids, None] * phi).ravel(), minlength=n_grid)
@@ -470,6 +490,31 @@ def _element_line_sets(
     return ls1, ls2, in_grid
 
 
+def _line_gammas(
+    element: str,
+    ls: pp.LineSet,
+    keep: np.ndarray,
+    zone: ZoneState,
+    stark: Mapping[str, Any] | None,
+) -> float | np.ndarray:
+    """Lorentzian HWHM of the kept lines: the zone's ``gamma_nm`` for every line, except
+    that H I Balmer lines get their Ne-dependent Stark width when ``stark.hydrogen`` is set."""
+    if element != "H" or not (stark or {}).get("hydrogen"):
+        return zone.gamma_nm
+    g = np.full(int(keep.sum()), float(zone.gamma_nm))
+    balmer = ls.is_I[keep] & (np.abs(ls.Ei[keep] - pp.BALMER_LOWER_EV) < 0.05)
+    g[balmer] = np.maximum(pp.balmer_stark_hwhm_nm(ls.Ek[keep][balmer], zone.Ne), zone.gamma_nm)
+    return g
+
+
+def _stark_half_widths(hw: np.ndarray, gamma: float | np.ndarray) -> np.ndarray:
+    """Widen the windows of per-line (Stark) widths to +-20 HWHM; a scalar zone width
+    leaves ``hw`` unchanged (bit-identical spectra without ``generation.stark``)."""
+    if np.ndim(gamma) == 0:
+        return hw
+    return np.maximum(hw, np.minimum(STARK_HALF_WINDOW_HWHM * gamma, STARK_MAX_HALF_WINDOW_NM))
+
+
 def synthesise_fine_grid(
     elements: Sequence[str],
     number_fractions: np.ndarray,
@@ -481,6 +526,7 @@ def synthesise_fine_grid(
     min_relative_intensity: float = DEFAULT_MIN_RELATIVE_INTENSITY,
     adaptive_window: bool = DEFAULT_ADAPTIVE_WINDOW,
     return_lines: bool = False,
+    stark: Mapping[str, Any] | None = None,
 ) -> np.ndarray | tuple[np.ndarray, list[dict[str, Any]]]:
     """Emergent spectral radiance on the fine grid [erg s^-1 cm^-2 sr^-1 cm^-1]
     (before instrument broadening, no normalisation).
@@ -493,6 +539,7 @@ def synthesise_fine_grid(
     :func:`_line_half_widths`).  With ``return_lines=True`` a per-element list
     of dicts with the kept lines' ``wl, is_I, Ei, Ek, gi, gk, Ak, I_thin,
     tau0`` (inner-zone line-centre optical depth) is returned as well.
+    ``stark`` = ``generation.stark`` (see :func:`_line_gammas`).
     """
     grid = np.asarray(grid, dtype=np.float64)
     step = float(grid[1] - grid[0])
@@ -532,9 +579,11 @@ def synthesise_fine_grid(
         k1_int = ls1.kappa_int(n1)[keep]
         e1_int = ls1.emissivity_int(n1)[keep]
         sig1 = pp.doppler_sigma_nm(wl, inner.T, mass)
-        tau0_1 = pp.line_centre_optical_depth(k1_int, sig1, inner.gamma_nm, inner.l)
-        hw1 = _line_half_widths(tau0_1, inner.gamma_nm, line_window_nm, adaptive_window)
-        kappa1, eps1 = _accumulate_line_profiles(grid, step, wl, sig1, inner.gamma_nm, k1_int, e1_int, hw1)
+        g1 = _line_gammas(elem, ls1, keep, inner, stark)
+        tau0_1 = pp.line_centre_optical_depth(k1_int, sig1, g1, inner.l)
+        hw1 = _line_half_widths(tau0_1, g1, line_window_nm, adaptive_window)
+        hw1 = _stark_half_widths(hw1, g1)
+        kappa1, eps1 = _accumulate_line_profiles(grid, step, wl, sig1, g1, k1_int, e1_int, hw1)
         with np.errstate(divide="ignore", invalid="ignore"):
             S1 = np.where(kappa1 > 0, eps1 / kappa1, 0.0)
         tau1 = kappa1 * inner.l
@@ -545,9 +594,11 @@ def synthesise_fine_grid(
             k2_int = ls2.kappa_int(n2)[keep]
             e2_int = ls2.emissivity_int(n2)[keep]
             sig2 = pp.doppler_sigma_nm(wl, outer.T, mass)
-            tau0_2 = pp.line_centre_optical_depth(k2_int, sig2, outer.gamma_nm, outer.l)
-            hw2 = _line_half_widths(tau0_2, outer.gamma_nm, line_window_nm, adaptive_window)
-            kappa2, eps2 = _accumulate_line_profiles(grid, step, wl, sig2, outer.gamma_nm, k2_int, e2_int, hw2)
+            g2 = _line_gammas(elem, ls2, keep, outer, stark)
+            tau0_2 = pp.line_centre_optical_depth(k2_int, sig2, g2, outer.l)
+            hw2 = _line_half_widths(tau0_2, g2, line_window_nm, adaptive_window)
+            hw2 = _stark_half_widths(hw2, g2)
+            kappa2, eps2 = _accumulate_line_profiles(grid, step, wl, sig2, g2, k2_int, e2_int, hw2)
             with np.errstate(divide="ignore", invalid="ignore"):
                 S2 = np.where(kappa2 > 0, eps2 / kappa2, 0.0)
             tau2 = kappa2 * outer.l
@@ -572,13 +623,34 @@ def apply_instrument(radiance: np.ndarray, kernel: np.ndarray | None) -> np.ndar
     return fftconvolve(radiance, kernel, mode="same")
 
 
+def broaden_instrument(
+    radiance: np.ndarray,
+    grid: np.ndarray,
+    fine_step_nm: float,
+    instrument: Mapping[str, Any] | None,
+) -> np.ndarray:
+    """Instrument broadening on the fine grid. ``instrument.fwhm_ranges_nm`` (optional,
+    ``[[lo, hi, fwhm], ...]``) gives each spectrometer channel its own FWHM; wavelengths
+    outside every range use ``fwhm_nm``. Without the key this is ``apply_instrument``."""
+    out = apply_instrument(radiance, instrument_kernel(fine_step_nm, instrument))
+    for lo, hi, fwhm in (instrument or {}).get("fwhm_ranges_nm") or []:
+        m = (grid >= float(lo)) & (grid < float(hi))
+        if np.any(m):
+            k = instrument_kernel(fine_step_nm, {**instrument, "fwhm_nm": float(fwhm)})
+            out[m] = apply_instrument(radiance, k)[m]
+    return out
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Detector model (generation.detector): spectral response, laser line, saturation
 # ─────────────────────────────────────────────────────────────────────────────
 def detector_sensitivity(wavelength: np.ndarray, response_cfg: Mapping[str, Any]) -> np.ndarray:
     """Relative spectral sensitivity (max = 1) on the spectrometer axis from the
     two calibration lamps (``data/efficiency_correction``); pixels outside the
-    calibrated range take the nearest calibrated value."""
+    calibrated range take the nearest calibrated value. ``response_cfg.smooth_nm``
+    (optional) smooths log10 sensitivity within each detector channel: where the
+    lamp signal is weak (FireFly 2024: 188-260 and 370-460 nm) the raw curve jumps
+    by up to 0.2 dex between neighbouring pixels, which would distort line shapes."""
     from data.efficiency_correction import RelativeEfficiencyCorrection  # lazy
 
     root = Path(__file__).resolve().parents[1]
@@ -588,7 +660,23 @@ def detector_sensitivity(wavelength: np.ndarray, response_cfg: Mapping[str, Any]
     wl = np.asarray(wavelength, dtype=np.float64)
     fac = np.interp(wl, rec.wavelength, rec.factor)  # clamps to the calibrated edges
     sens = 1.0 / fac
+    smooth_nm = float(response_cfg.get("smooth_nm") or 0.0)
+    if smooth_nm > 0:
+        sens = _smooth_log_per_channel(wl, sens, smooth_nm)
     return sens / sens.max()
+
+
+def _smooth_log_per_channel(wl: np.ndarray, v: np.ndarray, width_nm: float) -> np.ndarray:
+    """Moving mean of log10(v) over ``width_nm`` within each channel (a new channel starts
+    where the axis stops increasing; mirror padding keeps the channel edges unbiased)."""
+    out = np.log10(np.maximum(v, 1e-12))
+    cuts = [0, *(np.where(np.diff(wl) < 0)[0] + 1), wl.size]
+    for a, b in zip(cuts[:-1], cuts[1:]):
+        if b - a < 3:
+            continue
+        n = max(3, int(round(width_nm / float(np.median(np.diff(wl[a:b]))))) | 1)
+        out[a:b] = uniform_filter1d(out[a:b], n, mode="mirror")
+    return 10.0 ** out
 
 
 def response_jitter(
@@ -686,12 +774,27 @@ def synthesise_spectrum(
         row:            sample-table row with the contract-C1 zone columns
         db_path:        SQLite line database
         gen_cfg:        {fine_step_nm, line_window_nm, min_relative_intensity,
-                         adaptive_window, instrument: {profile, fwhm_nm},
+                         adaptive_window, instrument: {profile, fwhm_nm}, stark,
                          detector: {response, saturation, laser_line} (see
                          :func:`apply_detector`), sensitivity (precomputed
                          :func:`detector_sensitivity`), augment: {noise_sigma, continuum}}
         rng:            used by ``detector`` and ``augment.noise_sigma > 0``
     """
+    spectrum = synthesise_radiance(elements, mass_fractions, wavelength, row, db_path, gen_cfg)
+    return finish_spectrum(spectrum, wavelength, gen_cfg, rng)
+
+
+def synthesise_radiance(
+    elements: Sequence[str],
+    mass_fractions: np.ndarray,
+    wavelength: np.ndarray,
+    row: Mapping[str, Any],
+    db_path: str,
+    gen_cfg: Mapping[str, Any] | None = None,
+) -> np.ndarray:
+    """Emergent radiance on the spectrometer axis after the instrument kernel, before the
+    detector model and any normalisation [erg s^-1 cm^-2 sr^-1 cm^-1]. The physical scale
+    lets radiances of different plasmas be added (``generation.mixtures``)."""
     gc = dict(gen_cfg or {})
     fine_step = float(gc.get("fine_step_nm", DEFAULT_FINE_STEP_NM))
     grid = make_fine_grid(wavelength, fine_step)
@@ -703,9 +806,22 @@ def synthesise_spectrum(
         line_window_nm=float(gc.get("line_window_nm", DEFAULT_LINE_WINDOW_NM)),
         min_relative_intensity=float(gc.get("min_relative_intensity", DEFAULT_MIN_RELATIVE_INTENSITY)),
         adaptive_window=bool(gc.get("adaptive_window", DEFAULT_ADAPTIVE_WINDOW)),
+        stark=gc.get("stark"),
     )
-    radiance = apply_instrument(radiance, instrument_kernel(fine_step, gc.get("instrument", DEFAULT_INSTRUMENT)))
-    spectrum = np.interp(np.asarray(wavelength, dtype=np.float64), grid, radiance)
+    instrument = gc.get("instrument", DEFAULT_INSTRUMENT)
+    radiance = broaden_instrument(radiance, grid, fine_step, instrument)
+    return np.interp(np.asarray(wavelength, dtype=np.float64), grid, radiance)
+
+
+def finish_spectrum(
+    spectrum: np.ndarray,
+    wavelength: np.ndarray,
+    gen_cfg: Mapping[str, Any] | None = None,
+    rng: np.random.Generator | None = None,
+) -> np.ndarray:
+    """Detector model, ``augment`` and output units (unit-normalised or full well) of a
+    radiance on the spectrometer axis (:func:`synthesise_radiance`)."""
+    gc = dict(gen_cfg or {})
     if gc.get("detector"):
         rng = rng or np.random.default_rng()
         spectrum = apply_detector(spectrum, wavelength, gc["detector"], gc.get("sensitivity"), rng)
@@ -717,6 +833,10 @@ def synthesise_spectrum(
     if peak > 0 and float(aug.get("noise_sigma", 0.0)) > 0:
         rng = rng or np.random.default_rng()
         spectrum = spectrum + rng.normal(0.0, float(aug["noise_sigma"]) * peak, spectrum.size)
+    if (gc.get("detector") or {}).get("output_units", "unit_norm") == "full_well":
+        # absolute scale kept (fraction of full well, clipped at 1): the canonical input
+        # (data/canonical.py) applies the real noise floor in these units
+        return spectrum.astype(np.float64)
     return unit_norm(spectrum)
 
 
@@ -741,6 +861,15 @@ def _generate_zone_one(args) -> tuple[int, np.ndarray]:
     rng = np.random.default_rng(int(_zw_gen_cfg.get("seed", 0)) * 1_000_003 + idx)
     spec = synthesise_spectrum(elements, mass_fracs, _zw_wavelength, row, _zw_db_path, _zw_gen_cfg, rng=rng)
     return idx, spec
+
+
+def _generate_mixture_one(args) -> tuple[int, np.ndarray]:
+    idx, comps, frac = args
+    seed = int(_zw_gen_cfg.get("seed", 0)) * 1_000_003 + MIXTURE_SEED_OFFSET + idx
+    rad = [synthesise_radiance(el, mf, _zw_wavelength, row, _zw_db_path, _zw_gen_cfg)
+           for el, mf, row in comps]  # fmt: skip
+    mix = frac * rad[0] + (1.0 - frac) * rad[1]
+    return idx, finish_spectrum(mix, _zw_wavelength, _zw_gen_cfg, np.random.default_rng(seed))
 
 
 def generate_zone_spectra(
@@ -789,6 +918,92 @@ def generate_zone_spectra(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Boundary mixtures (generation.mixtures)
+# ─────────────────────────────────────────────────────────────────────────────
+def mixture_pairs(cfg: Mapping[str, Any]) -> list[tuple[str, str]]:
+    """``pairs: [[A, B], ...]``, or every pair of ``minerals`` (list order kept)."""
+    if cfg.get("pairs"):
+        return [(str(a), str(b)) for a, b in cfg["pairs"]]
+    names = [str(m) for m in cfg.get("minerals") or []]
+    return [(a, b) for i, a in enumerate(names) for b in names[i + 1 :]]
+
+
+def mixture_label(a: str, b: str) -> str:
+    return f"{a} + {b}"
+
+
+def build_mixture_table(
+    pure: pd.DataFrame, cfg: Mapping[str, Any], seed: int
+) -> tuple[pd.DataFrame, list[tuple]]:
+    """Sample-table rows and synthesis tasks of the boundary mixtures.
+
+    Per pair (A, B), ``n_samples_per_pair`` shots; each takes one random pure shot of A and
+    one of B from ``pure`` (their composition and plasma rows, i.e. the cached spectra
+    before the detector) and an area fraction ``w ~ U(fraction)`` of A (default 0.2-0.8).
+    Element columns: ``w c_A + (1 - w) c_B`` (mass fractions, sum 1); zone columns 0 and
+    ``plasma_model: mixture``, so the rows carry no plasma labels; ``unique_id`` ends in
+    ``_w<w>``. Returns (table with the columns of ``pure``, tasks for
+    :func:`generate_mixture_spectra`).
+    """
+    rng = np.random.default_rng(int(seed) + 7919)
+    lo, hi = (float(v) for v in cfg.get("fraction", (0.2, 0.8)))
+    n = int(cfg.get("n_samples_per_pair", 100))
+    elements = [c for c in pure.columns if c not in _SKIP_COLS]
+    names = pure["sample_type_name"].astype(str).to_numpy()
+    ids = pure["sample_type_id"].astype(str).to_numpy()
+    conc = pure[elements].to_numpy(dtype=np.float64)
+    zone_rows = pure[list(ZONE_COLUMNS)].to_dict("records")
+    rows, tasks = [], []
+    for a, b in mixture_pairs(cfg):
+        ia, ib = np.flatnonzero(names == a), np.flatnonzero(names == b)
+        for m, idx in ((a, ia), (b, ib)):
+            if idx.size == 0:
+                raise ValueError(f"generation.mixtures: {m!r} is not a generated sample type")
+        sid = f"MIX_{ids[ia[0]]}_{ids[ib[0]]}"
+        for k in range(n):
+            i, j, w = int(rng.choice(ia)), int(rng.choice(ib)), float(rng.uniform(lo, hi))
+            rec = dict(zip(elements, w * conc[i] + (1.0 - w) * conc[j]))
+            rec.update(sample_type_id=sid, sample_type_name=mixture_label(a, b),
+                       unique_id=f"{sid}_{k + 1:04d}_w{w:.3f}")  # fmt: skip
+            rows.append(rec)
+            tasks.append(((elements, conc[i], zone_rows[i]), (elements, conc[j], zone_rows[j]), w))
+    table = pd.DataFrame(rows)
+    for c in pure.columns:
+        if c not in table.columns:
+            table[c] = 0.0
+    table["plasma_model"] = "mixture"
+    return table[list(pure.columns)], tasks
+
+
+def generate_mixture_spectra(
+    tasks: Sequence[tuple],
+    wavelength: np.ndarray,
+    db_path: str,
+    gen_cfg: dict[str, Any],
+    n_workers: int = 1,
+    verbose: bool = True,
+) -> np.ndarray:
+    """Synthesise the mixture shots of :func:`build_mixture_table` (same worker set-up and
+    output units as :func:`generate_zone_spectra`)."""
+    spectra = np.zeros((len(tasks), len(wavelength)), dtype=np.float32)
+    jobs = [(i, (t[0], t[1]), t[2]) for i, t in enumerate(tasks)]
+    if n_workers > 1 and len(jobs) > 1:
+        with mp.Pool(processes=n_workers, initializer=_init_zone_worker,
+                     initargs=(wavelength, db_path, gen_cfg)) as pool:  # fmt: skip
+            results = pool.imap_unordered(_generate_mixture_one, jobs, chunksize=4)
+            for done, (idx, spec) in enumerate(results, 1):
+                spectra[idx] = spec
+                if verbose and done % 500 == 0:
+                    print(f"   Completed {done}/{len(jobs)} mixtures")
+    else:
+        _init_zone_worker(wavelength, db_path, gen_cfg)
+        for job in jobs:
+            idx, spec = _generate_mixture_one(job)
+            spectra[idx] = spec
+    return spectra
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Dataset wrapper (same HDF5 layout / cache dir as SyntheticLIBSDataset)
 # ─────────────────────────────────────────────────────────────────────────────
 def _file_md5(path: Path) -> str:
@@ -805,10 +1020,14 @@ def _resolve(path: str | Path) -> Path:
 
 
 def load_extra_spectra(
-    entry: Mapping[str, Any], wavelength: np.ndarray, columns: Sequence[str]
+    entry: Mapping[str, Any],
+    wavelength: np.ndarray,
+    columns: Sequence[str],
+    full_well_counts: float | None = None,
 ) -> tuple[pd.DataFrame, np.ndarray]:
     """Measured spectra of an extra class (``extra_spectra`` item of the data
-    config) as sample-table rows + unit-normalised spectra.
+    config) as sample-table rows + spectra: unit-normalised, or in full-well units
+    (raw counts / ``full_well_counts``) when the dataset keeps an absolute scale.
 
     ``entry = {path, label[, composition]}``; ``path`` is an HDF5 file with
     ``wavelength`` [n_px] and ``spectra`` [n, n_px] (raw counts) on the
@@ -826,7 +1045,10 @@ def load_extra_spectra(
             f"extra_spectra {entry['path']}: wavelength axis differs from the generator axis "
             f"({wl.size} vs {len(wavelength)} px) - set paths.wavelength_json to the same instrument"
         )
-    spectra = np.stack([unit_norm(r) for r in raw]).astype(np.float32)
+    if full_well_counts:
+        spectra = (raw / float(full_well_counts)).astype(np.float32)
+    else:
+        spectra = np.stack([unit_norm(r) for r in raw]).astype(np.float32)
     n = len(spectra)
     comp = {str(k): float(v) for k, v in (entry.get("composition") or {}).items()}
     total = sum(comp.values())
@@ -868,6 +1090,8 @@ class TwoZoneSyntheticDataset(SyntheticLIBSDataset):
         augment: dict[str, float] | None = None,
         detector: dict[str, Any] | None = None,
         extra_spectra: Sequence[Mapping[str, Any]] | None = None,
+        stark: Mapping[str, Any] | None = None,
+        mixtures: Mapping[str, Any] | None = None,
         n_workers: int = 1,
         cache_dir: str | None = None,
         seed: int = 42,
@@ -883,13 +1107,40 @@ class TwoZoneSyntheticDataset(SyntheticLIBSDataset):
         self.outer_density = str(outer_density)
         self.instrument = {**DEFAULT_INSTRUMENT, **(instrument or {})}
         self.instrument["fwhm_nm"] = float(self.instrument["fwhm_nm"])
+        if "fwhm_ranges_nm" in self.instrument:  # per-channel FWHM, [[lo, hi, fwhm], ...]
+            self.instrument["fwhm_ranges_nm"] = [
+                [float(v) for v in r] for r in self.instrument["fwhm_ranges_nm"]
+            ]
         self.fine_step_nm = float(fine_step_nm)
         self.line_window_nm = float(line_window_nm)
         self.min_relative_intensity = float(min_relative_intensity)
         self.adaptive_window = bool(adaptive_window)
         self.augment = {k: float(v) for k, v in {**DEFAULT_AUGMENT, **(augment or {})}.items()}
         self.detector = dict(detector or {})
+        units = str(self.detector.get("output_units", "unit_norm"))
+        if units not in ("unit_norm", "full_well"):
+            raise ValueError(
+                f"generation.detector.output_units must be unit_norm|full_well, got {units!r}"
+            )
+        if units == "full_well" and not self.detector.get("saturation"):
+            raise ValueError(
+                "output_units: full_well needs generation.detector.saturation (the full-well scale)"
+            )
+        self.units = units
+        self.full_well_counts = (
+            float(self.detector.get("full_well_counts", 64900.0)) if units == "full_well" else None
+        )
         self.extra_spectra = [dict(e) for e in (extra_spectra or [])]
+        self.mixtures = dict(mixtures or {})
+        unknown = sorted(set(self.mixtures) - MIXTURE_KEYS)
+        if unknown:
+            raise ValueError(f"generation.mixtures: unknown keys {unknown}")
+        if self.mixtures and not mixture_pairs(self.mixtures):
+            raise ValueError("generation.mixtures needs >= 2 minerals or explicit pairs")
+        self.stark = {k: str(v) for k, v in dict(stark or {}).items()}
+        for k, v in self.stark.items():
+            if v not in STARK_MODELS.get(k, ()):
+                raise ValueError(f"generation.stark.{k}: {v!r} not in {STARK_MODELS.get(k, ())}")
         # lamp sensitivity: computed once here, shipped to the workers via gen_cfg
         self.sensitivity = (
             detector_sensitivity(wavelength, self.detector["response"])
@@ -922,6 +1173,7 @@ class TwoZoneSyntheticDataset(SyntheticLIBSDataset):
             "augment": dict(self.augment),
             "detector": dict(self.detector),
             "sensitivity": self.sensitivity,
+            "stark": dict(self.stark),
             "seed": self.seed,
         }
 
@@ -929,14 +1181,16 @@ class TwoZoneSyntheticDataset(SyntheticLIBSDataset):
     def cache_key(self) -> str:
         """Key of the whole dataset (synthetic + ``extra_spectra``): names the
         splits and the line-feature / token caches built from it."""
-        if not self.extra_spectra:
+        if not self.extra_spectra and not self.mixtures:
             return self.synthetic_cache_key
         extras = [
             {**{k: v for k, v in e.items() if k != "path"}, "md5": _file_md5(_resolve(e["path"]))}
             for e in self.extra_spectra
         ]
-        blob = json.dumps({"synthetic": self.synthetic_cache_key, "extra_spectra": extras},
-                          sort_keys=True, default=str)  # fmt: skip
+        payload = {"synthetic": self.synthetic_cache_key, "extra_spectra": extras}
+        if self.mixtures:  # absent key keeps the dataset keys of configs without mixtures
+            payload["mixtures"] = self.mixtures
+        blob = json.dumps(payload, sort_keys=True, default=str)
         return hashlib.md5(blob.encode()).hexdigest()[:12]
 
     def _cache_path(self) -> str:
@@ -975,21 +1229,53 @@ class TwoZoneSyntheticDataset(SyntheticLIBSDataset):
                     _file_md5(_resolve(resp[k])) for k in ("deuterium_h5", "halogen_h5")
                 ]
             cfg["detector"] = det
+        if self.stark:  # absent key keeps the hashes of caches built before the Stark option
+            cfg["stark"] = dict(self.stark)
         return hashlib.md5(json.dumps(cfg, sort_keys=True, default=str).encode()).hexdigest()[:12]
 
     def _build(self) -> tuple[pd.DataFrame, np.ndarray]:
         table, spectra = self._build_synthetic()
-        if not self.extra_spectra or table.empty:
+        if table.empty or not (self.extra_spectra or self.mixtures):
             return table, spectra
         tables, arrays = [table], [np.asarray(spectra, dtype=np.float32)]
+        if self.mixtures:
+            t, x = self._build_mixtures(table)
+            tables.append(t)
+            arrays.append(np.asarray(x, dtype=np.float32))
         for entry in self.extra_spectra:
-            t, x = load_extra_spectra(entry, self.wavelength, list(table.columns))
+            t, x = load_extra_spectra(
+                entry, self.wavelength, list(table.columns), full_well_counts=self.full_well_counts
+            )
             tables.append(t)
             arrays.append(x)
             if self.verbose:
                 print(f"Appended {len(t)} measured spectra of class {entry['label']!r} "
                       f"({entry['path']})")  # fmt: skip
         return pd.concat(tables, ignore_index=True), np.concatenate(arrays, axis=0)
+
+    def _mixture_cache_path(self) -> str:
+        blob = json.dumps({"synthetic": self.synthetic_cache_key, "mixtures": self.mixtures},
+                          sort_keys=True, default=str)  # fmt: skip
+        key = hashlib.md5(blob.encode()).hexdigest()[:12]
+        return os.path.join(self.cache_dir, f"synthetic_mixtures_{key}.h5")
+
+    def _build_mixtures(self, pure: pd.DataFrame) -> tuple[pd.DataFrame, np.ndarray]:
+        """Boundary mixtures of cached pure shots (own cache; the pure cache is reused)."""
+        path = self._mixture_cache_path()
+        if os.path.isfile(path):
+            if self.verbose:
+                print(f"Loading cached mixtures from: {path}")
+            return self._load_cache(path)
+        table, tasks = build_mixture_table(pure, self.mixtures, self.seed)
+        if self.verbose:
+            n_pairs = len(mixture_pairs(self.mixtures))
+            print(f"Synthesising {len(tasks)} boundary mixtures ({n_pairs} pairs)")
+        spectra = generate_mixture_spectra(tasks, self.wavelength, self.db_path, self.gen_cfg,
+                                           self.n_workers, self.verbose)  # fmt: skip
+        self._save_cache(table, spectra, path)
+        if self.verbose:
+            print(f"Cached mixtures to: {path}")
+        return table, spectra
 
     def _build_synthetic(self) -> tuple[pd.DataFrame, np.ndarray]:
         cache = self._cache_path()
@@ -1091,6 +1377,8 @@ def build_two_zone_dataset_from_config(cfg: dict) -> TwoZoneSyntheticDataset:
         augment=gen.get("augment"),
         detector=gen.get("detector"),
         extra_spectra=cfg.get("extra_spectra"),
+        stark=gen.get("stark"),
+        mixtures=gen.get("mixtures"),
         n_workers=int(gen.get("n_workers", 1)),
         cache_dir=cache_dir,
         seed=int(gen.get("seed", 42)),

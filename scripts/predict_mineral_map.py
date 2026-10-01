@@ -56,6 +56,7 @@ import yaml  # noqa: E402
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from data.canonical import patch_input, unit_norm_rows  # noqa: E402
 from data.line_features import FEAT_VALID, fit_line_in_spectrum  # noqa: E402
 from data.line_features import N_FEATURES as N_FIT  # noqa: E402
 from data.line_tokenization import F_DELTA, F_FWHM, F_MAX_I, F_R2, F_RMSE  # noqa: E402
@@ -100,18 +101,14 @@ def _fit_one(spectrum: np.ndarray) -> np.ndarray:
     return out
 
 
-def unit_norm_rows(X: np.ndarray) -> np.ndarray:
-    """Row-wise ``libs_pipeline.unit_norm`` (min-shift, divide by the maximum)."""
-    X = X - X.min(axis=1, keepdims=True)
-    peak = X.max(axis=1, keepdims=True)
-    return np.divide(X, peak, out=np.zeros_like(X), where=peak > 0).astype(np.float32)
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Model
 # ─────────────────────────────────────────────────────────────────────────────
-def _classifier_module(run_dir: Path, runner, n_classes: int, wavelength=None):
-    """LIBSFinetuneModule of the run with its best checkpoint (strict key check)."""
+def _classifier_module(
+    run_dir: Path, runner, n_classes: int, wavelength=None, checkpoint: str = "best"
+):
+    """LIBSFinetuneModule of the run with its ``checkpoint`` ('best': best.ckpt, selected on
+    synthetic validation accuracy; 'last': last.ckpt) and a strict key check."""
     from analyze_attention_importance import _checkpoint_encoder_state, build_encoder
     from training.finetune import LIBSFinetuneModule
 
@@ -124,7 +121,7 @@ def _classifier_module(run_dir: Path, runner, n_classes: int, wavelength=None):
         encoder = build_encoder(cfg, runner.run_info, meta)
     else:
         encoder = build_encoder(cfg, runner.run_info, None, wavelength=wavelength)
-    ckpt = runner.finetune_checkpoint()
+    ckpt = runner.finetune_checkpoint(prefer=checkpoint)
     enc_state = _checkpoint_encoder_state(str(ckpt))
     missing, _ = encoder.load_state_dict(enc_state, strict=False)
     missing = [k for k in missing if not k.startswith("mip_")]  # pretrain-only MIP heads
@@ -152,9 +149,12 @@ def _classifier_module(run_dir: Path, runner, n_classes: int, wavelength=None):
     return module.to(runner.device).eval()
 
 
-def load_classifier(run_dir: Path, device: str, map_wavelength: np.ndarray) -> dict:
-    """{mode, module, class_names, table, dataset, runner[, static]} of a
-    classification run; spectral_patch encoders are rebuilt on ``map_wavelength``."""
+def load_classifier(
+    run_dir: Path, device: str, map_wavelength: np.ndarray, checkpoint: str = "best"
+) -> dict:
+    """{mode, module, class_names, table, dataset, runner[, static | input_spec]} of a
+    classification run; spectral_patch encoders are rebuilt on ``map_wavelength`` and
+    their input spec (preprocess + canonical constants) comes from run_info."""
     from data.libs_pipeline import build_dataset_from_config
     from models.spectral_patch_embedding import axis_signature
     from publication.inference_runner import FinetuneInferenceRunner
@@ -184,8 +184,9 @@ def load_classifier(run_dir: Path, device: str, map_wavelength: np.ndarray) -> d
 
     out = {"mode": mode, "class_names": class_names, "table": table, "dataset": ds}
     out["runner"] = runner
+    out["checkpoint"] = checkpoint
     if mode == "tokens":
-        out["module"] = _classifier_module(run_dir, runner, len(class_names))
+        out["module"] = _classifier_module(run_dir, runner, len(class_names), checkpoint=checkpoint)
         with h5py.File(runner.tokens_path, "r") as f:
             out["static"] = f["tokens"][0].astype(np.float32)  # identical for every row
         return out
@@ -203,15 +204,22 @@ def load_classifier(run_dir: Path, device: str, map_wavelength: np.ndarray) -> d
             f"note: map axis {map_axis} differs from the training axis {train_axis}; "
             "the windows are resampled in nm"
         )
-    out["module"] = _classifier_module(run_dir, runner, len(class_names), wavelength=map_wavelength)
+    out["input_spec"] = {
+        "preprocess": info.get("preprocess", "none"),
+        "canonical": info.get("canonical"),
+    }
+    out["module"] = _classifier_module(
+        run_dir, runner, len(class_names), wavelength=map_wavelength, checkpoint=checkpoint
+    )
     same_axis = train_axis.get("md5") == map_axis["md5"]
     out["module_train_axis"] = (
         out["module"]
         if same_axis
         else _classifier_module(
-            run_dir, runner, len(class_names), wavelength=np.asarray(ds.wavelength)
+            run_dir, runner, len(class_names), wavelength=np.asarray(ds.wavelength),
+            checkpoint=checkpoint,
         )
-    )
+    )  # fmt: skip
     return out
 
 
@@ -231,7 +239,7 @@ def classify_tokens(module, tokens: np.ndarray, valid: np.ndarray, device: str, 
 
 @torch.no_grad()
 def classify_spectra(module, spectra: np.ndarray, device: str, bs: int = 512):
-    """Softmax probabilities [n, n_classes] of unit-normalised spectra."""
+    """Softmax probabilities [n, n_classes] of spectral_patch model input (patch_input)."""
     out = []
     for s in range(0, len(spectra), bs):
         x = torch.from_numpy(np.ascontiguousarray(spectra[s : s + bs])).to(device)
@@ -250,7 +258,10 @@ def sanity_check(clf: dict, device: str) -> float:
             val = f["fit_valid"][test].astype(np.uint8)
         probs = classify_tokens(clf["module"], tok, val, device)
     else:
-        spectra = np.asarray(clf["dataset"].spectra[test], dtype=np.float32)
+        ds = clf["dataset"]
+        spectra = patch_input(
+            ds.spectra[test], ds.wavelength, getattr(ds, "units", "unit_norm"), clf["input_spec"]
+        )
         probs = classify_spectra(clf["module_train_axis"], spectra, device)
     all_ids = table["sample_type_id"].astype(str).to_numpy()
     truth = np.searchsorted(np.unique(all_ids), all_ids[test])
@@ -400,6 +411,12 @@ def main() -> None:
     ap.add_argument(
         "--max_blocks", type=int, default=None, help="process at most N blocks (testing)"
     )
+    ap.add_argument(
+        "--checkpoint",
+        choices=("best", "last"),
+        default="best",
+        help="best.ckpt (selected on synthetic validation accuracy) or last.ckpt",
+    )
     args = ap.parse_args()
     if (args.gate_label is None) != (args.gate_peak_counts is None):
         ap.error("--gate_label and --gate_peak_counts go together")
@@ -444,12 +461,14 @@ def main() -> None:
             # Pool first: fork before CUDA is initialised in this process.
             pool = mp.get_context("fork").Pool(args.workers, _init_worker, (wl, centres, fit_cfg))
 
-        clf = load_classifier(run_dir, device, wl)
+        clf = load_classifier(run_dir, device, wl, checkpoint=args.checkpoint)
         class_names = clf["class_names"]
         acc = sanity_check(clf, device)
         ref = run_info.get("test_results", {}).get("test/accuracy")
-        print(f"sanity: test accuracy {acc:.4f} (run_info {ref})")
-        if ref is not None and abs(acc - float(ref)) > 0.02:
+        print(
+            f"sanity: test accuracy {acc:.4f} ({args.checkpoint}.ckpt; run_info {ref}, best.ckpt)"
+        )
+        if args.checkpoint == "best" and ref is not None and abs(acc - float(ref)) > 0.02:
             raise RuntimeError("reloaded model does not reproduce the run's test accuracy")
         json.dump(
             {"class_names": class_names, "sanity_test_accuracy": acc, "mode": clf["mode"]},
@@ -469,8 +488,8 @@ def main() -> None:
                 with h5py.File(h5_path, "r") as f:
                     raw = f["measurements"][key]["libs"]["data"][s:e][sel].astype(np.float32)
                 peak = raw.max(axis=1)
-                X = unit_norm_rows(raw)
                 if clf["mode"] == "tokens":
+                    X = unit_norm_rows(raw)
                     feats = np.stack(pool.map(_fit_one, list(X), chunksize=4))
                     valid = (feats[..., FEAT_VALID] > 0.5).astype(np.uint8)
                     tokens = np.broadcast_to(clf["static"], (sel.size, *clf["static"].shape)).copy()
@@ -479,6 +498,7 @@ def main() -> None:
                     probs = classify_tokens(clf["module"], tokens, valid, device)
                     extra["n_valid"] = valid.sum(1).astype(np.int16)
                 else:
+                    X = patch_input(raw, wl, "counts", clf["input_spec"])
                     probs = classify_spectra(clf["module"], X, device)
             else:
                 peak = np.zeros(0, np.float32)

@@ -524,8 +524,12 @@ def generate_synthetic_spectra(
 # ─────────────────────────────────────────────────────────────────────────────
 # HDF5 cache helpers (shared by synthetic and measured datasets)
 # ─────────────────────────────────────────────────────────────────────────────
-def save_spectra_cache(table: pd.DataFrame, spectra: np.ndarray, path: str) -> None:
+def save_spectra_cache(
+    table: pd.DataFrame, spectra: np.ndarray, path: str, units: str = "unit_norm"
+) -> None:
+    """``units``: 'unit_norm' (default) or 'full_well' (fraction of the detector full well)."""
     with h5py.File(path, "w") as f:
+        f.attrs["units"] = units
         f.create_dataset("spectra", data=spectra, compression="gzip")
         grp = f.create_group("sample_table")
         grp.attrs["columns"] = json.dumps(list(table.columns))
@@ -538,8 +542,15 @@ def save_spectra_cache(table: pd.DataFrame, spectra: np.ndarray, path: str) -> N
                 grp.create_dataset(col, data=vals)
 
 
-def load_spectra_cache(path: str) -> tuple[pd.DataFrame, np.ndarray]:
+def load_spectra_cache(
+    path: str, expected_units: str | None = None
+) -> tuple[pd.DataFrame, np.ndarray]:
+    """Caches written before the units attribute are 'unit_norm'."""
     with h5py.File(path, "r") as f:
+        units = f.attrs.get("units", "unit_norm")
+        units = units.decode() if isinstance(units, bytes) else str(units)
+        if expected_units is not None and units != expected_units:
+            raise ValueError(f"{path} holds {units!r} spectra, expected {expected_units!r}")
         # read_direct converts chunk by chunk, so a float64 cache (written
         # before the generator switched to float32) never costs 2x the RAM.
         ds = f["spectra"]
@@ -562,7 +573,11 @@ def load_spectra_cache(path: str) -> tuple[pd.DataFrame, np.ndarray]:
 class SyntheticLIBSDataset(Dataset):
     """PyTorch dataset that materialises synthetic LIBS spectra in __init__
     (so .spectra / .sample_table are available as numpy arrays for downstream
-    train/val splitting). Spectra are cached to HDF5 keyed by config hash."""
+    train/val splitting). Spectra are cached to HDF5 keyed by config hash.
+    ``units`` is 'unit_norm' here; the physics-v2 generator can keep full-well units."""
+
+    units = "unit_norm"
+    full_well_counts = None
 
     def __init__(
         self,
@@ -615,10 +630,10 @@ class SyntheticLIBSDataset(Dataset):
         return os.path.join(self.cache_dir, f"synthetic_cache_{self.cache_key}.h5")
 
     def _save_cache(self, table: pd.DataFrame, spectra: np.ndarray, path: str):
-        save_spectra_cache(table, spectra, path)
+        save_spectra_cache(table, spectra, path, units=self.units)
 
     def _load_cache(self, path: str) -> tuple[pd.DataFrame, np.ndarray]:
-        return load_spectra_cache(path)
+        return load_spectra_cache(path, expected_units=self.units)
 
     def _build(self) -> tuple[pd.DataFrame, np.ndarray]:
         cache = self._cache_path()

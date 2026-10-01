@@ -1,5 +1,4 @@
-# Smoke variant of config/libs_data_minerals_avantes.yaml: same detector model
-# and epoxy class, 8 minerals x 12 shots, coarse fine_step_nm.
+# Smoke variant of config/libs_data_minerals_avantes_fw.yaml.
 paths:
   db:                "external_data/Source/LIBS_data.db"          # air wavelengths, REE lines included
   sample_matrix:     "external_data/Source/REE_minerals_oxides.xlsx"
@@ -50,6 +49,8 @@ generation:
   # (Outputs/pca_kmeans_Mar1A, 2026-09-30): the same Avantes spectrometers as the
   # 2024 FireFly lamp calibration (identical pixel spacing, Mar1A = first 13,213 px).
   detector:
+    output_units: full_well        # keep the absolute scale (fraction of full well)
+    full_well_counts: 64900        # Avantes/FireFly plateau (Mar1A 64,850-64,950 counts)
     response:                        # sensitivity = 1 / lamp correction factor (max 1)
       deuterium_h5: external_data/Data/DeuteriumWithCorrection.h5
       halogen_h5: external_data/Data/HalogenWithCorrection.h5

@@ -27,6 +27,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).parent))
 
 from data.synthetic_generator import SyntheticLIBSGenerator
+from data.canonical import patch_input, require_unit_norm, resolve_spec
 from data.libs_pipeline import build_dataset_from_config
 from data.line_embedding_pipeline import (
     prepare_line_token_assets,
@@ -124,14 +125,25 @@ def _generate_libs_pipeline(
     The full dataset is materialised once (cached to HDF5), then split into
     train/val by `data.synthetic.val_fraction` (default 0.1). n_bins is
     overridden in-place to match the actual wavelength array length. With
-    ``return_wavelength`` the spectrometer axis [nm] is returned as a third item
-    (spectral_patch embedding)."""
+    ``return_wavelength`` (spectral_patch embedding) the spectra are the model input
+    of data.canonical.patch_input for ``model.patch.preprocess``, and the spectrometer
+    axis [nm] plus {spec, units} of that input are returned as third and fourth items."""
     print(f"Generating LIBS-pipeline data from {libs_config_path}...")
     libs_cfg = yaml.safe_load(open(libs_config_path))
     libs_cfg.setdefault('generation', {})['seed'] = seed
 
     ds = build_dataset_from_config(libs_cfg)
-    spectra = ds.spectra.astype(np.float32)
+    input_meta = None
+    if return_wavelength:
+        units = getattr(ds, 'units', 'unit_norm')
+        spec = resolve_spec(config['model'], libs_cfg)
+        spectra = patch_input(ds.spectra, ds.wavelength, units, spec)
+        input_meta = {'spec': spec, 'units': units}
+        print(f"spectral_patch input: preprocess={spec['preprocess']}, source units={units}, "
+              f"width {spectra.shape[1]}")
+    else:
+        require_unit_norm(ds, "train_pretrain")
+        spectra = ds.spectra.astype(np.float32)
     if spectra.size == 0:
         raise RuntimeError("LIBS pipeline produced no spectra — check sample types / DB.")
 
@@ -148,7 +160,8 @@ def _generate_libs_pipeline(
     n_val = max(1, int(len(spectra) * val_frac))
     val_idx, train_idx = perm[:n_val], perm[n_val:]
     if return_wavelength:
-        return spectra[train_idx], spectra[val_idx], np.asarray(ds.wavelength, dtype=np.float64)
+        wl = np.asarray(ds.wavelength, dtype=np.float64)
+        return spectra[train_idx], spectra[val_idx], wl, input_meta
     return spectra[train_idx], spectra[val_idx]
 
 
@@ -206,6 +219,7 @@ def _prepare_line_token_libs(
     libs_cfg = yaml.safe_load(open(libs_config_path))
     libs_cfg.setdefault('generation', {})['seed'] = seed
     ds = build_dataset_from_config(libs_cfg)
+    require_unit_norm(ds, "line-token assets")
     if len(ds) == 0:
         raise RuntimeError("LIBS pipeline produced no spectra.")
     meta = prepare_line_token_assets(
@@ -235,6 +249,7 @@ def _prepare_line_tokens_linear_libs(
     libs_cfg = yaml.safe_load(open(libs_config_path))
     libs_cfg.setdefault('generation', {})['seed'] = seed
     ds = build_dataset_from_config(libs_cfg)
+    require_unit_norm(ds, "line-token assets")
     if len(ds) == 0:
         raise RuntimeError("LIBS pipeline produced no spectra.")
     meta = prepare_line_tokens_assets(
@@ -278,6 +293,7 @@ def main(args):
     line_tokens_path = None
     train_spectra = val_spectra = None
     spectral_meta = None
+    input_meta = None
 
     requested_emb = config['model'].get('embedding_type', 'intensity')
     # Default behaviour when --line_embedding_config is provided but the
@@ -312,7 +328,7 @@ def main(args):
         line_tokens_path = line_token_meta['line_tokens_path']
         print(f"Train: {len(train_indices)} | Val: {len(val_indices)} | n_lines: {config['data']['n_bins']}")
     elif requested_emb == 'spectral_patch':
-        train_spectra, val_spectra, wavelength = _generate_libs_pipeline(
+        train_spectra, val_spectra, wavelength, input_meta = _generate_libs_pipeline(
             config, args.libs_data_config, args.seed, return_wavelength=True,
         )
         spectral_meta = spectral_meta_from_config(config['model'], wavelength)
@@ -476,7 +492,10 @@ def main(args):
         "line_tokens_path": line_tokens_path,
         "line_embedding_config": args.line_embedding_config,
         "libs_data_config": args.libs_data_config,
-        "spectral_patch": spectral_patch_run_info(spectral_meta, model, args.libs_data_config),
+        "spectral_patch": spectral_patch_run_info(
+            spectral_meta, model, args.libs_data_config,
+            input_spec=(input_meta or {}).get('spec'), input_units=(input_meta or {}).get('units'),
+        ),
         "batch_size": config['pretrain']['batch_size'],
         "epochs": config['pretrain']['epochs'],
         "mask_ratio": config['pretrain']['mask_ratio'],

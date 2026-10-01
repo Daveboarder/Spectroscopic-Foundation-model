@@ -96,3 +96,53 @@ def test_load_extra_spectra(tmp_path):
     )
     with pytest.raises(ValueError, match="wavelength axis differs"):
         load_extra_spectra(entry, WL[:-1], cols)
+
+
+def test_load_extra_spectra_in_full_well_units(tmp_path):
+    raw = np.stack([100.0 + _line(500.0, 400.0), 64900.0 * np.ones_like(WL)]).astype(np.float32)
+    path = tmp_path / "epoxy.h5"
+    with h5py.File(path, "w") as f:
+        f["wavelength"] = WL
+        f["spectra"] = raw
+    cols = [
+        "sample_type_id",
+        "sample_type_name",
+        "unique_id",
+        "C",
+        "Te1",
+        "Ne1",
+        "N1",
+        "l_inner",
+        "plasma_model",
+    ]
+    entry = {"path": str(path), "label": "epoxid", "composition": {"C": 1}}
+    _, fw = load_extra_spectra(entry, WL, cols, full_well_counts=64900.0)
+    np.testing.assert_allclose(fw, raw / 64900.0, rtol=1e-6)
+    _, un = load_extra_spectra(entry, WL, cols)  # default: unit-normalised as before
+    assert un.max(axis=1) == pytest.approx([1.0, 0.0])  # default: unit-normalised as before
+
+
+def test_full_well_output_requires_the_saturation_scale():
+    from data.two_zone_pipeline import TwoZoneSyntheticDataset
+
+    common = dict(sample_types=[], wavelength=WL, db_path="unused.db", verbose=False)
+    with pytest.raises(ValueError, match="saturation"):
+        TwoZoneSyntheticDataset(detector={"output_units": "full_well"}, **common)
+    with pytest.raises(ValueError, match="unit_norm\\|full_well"):
+        TwoZoneSyntheticDataset(detector={"output_units": "counts"}, **common)
+
+
+def test_response_smoothing_removes_pixel_noise_but_keeps_channel_steps():
+    from data.two_zone_pipeline import _smooth_log_per_channel
+
+    ch1, ch2 = np.arange(300.0, 400.0, 0.03), np.arange(399.9, 500.0, 0.03)  # seam: axis restarts
+    wl = np.concatenate([ch1, ch2])
+    true = np.concatenate(
+        [np.full(ch1.size, 0.1), np.full(ch2.size, 1.0)]
+    )  # 1 dex step at the seam
+    noisy = true * 10 ** (0.2 * np.where(np.arange(wl.size) % 2, 1, -1))  # +-0.2 dex pixel noise
+    out = _smooth_log_per_channel(wl, noisy, 5.0)
+    assert np.allclose(np.log10(out), np.log10(true), atol=0.21 / 10)
+    assert out[ch1.size - 1] == pytest.approx(0.1, rel=0.05) and out[ch1.size] == pytest.approx(
+        1.0, rel=0.05
+    )

@@ -39,6 +39,7 @@ from data.line_embedding_pipeline import (
     prepare_line_token_assets,
     prepare_line_tokens_assets,
 )
+from data.canonical import patch_input, require_unit_norm, resolve_spec
 from models.libs_transformer import LIBSTransformer
 from models.spectral_patch_embedding import (
     axis_signature,
@@ -272,7 +273,19 @@ def _generate_libs_pipeline_labeled(
     if len(ds) == 0:
         raise RuntimeError("LIBS pipeline produced no labeled data — check sample matrix / DB.")
 
-    spectra = ds.spectra.astype(np.float32)
+    # spectral_patch: the model input of data.canonical.patch_input (unit_norm rows or the
+    # canonical [spectrum, saturation mask]); every other mode needs unit-normalised spectra
+    input_meta = None
+    if config['model'].get('embedding_type') == 'spectral_patch':
+        units = getattr(ds, 'units', 'unit_norm')
+        spec = resolve_spec(config['model'], libs_cfg)
+        spectra = patch_input(ds.spectra, ds.wavelength, units, spec)
+        input_meta = {'spec': spec, 'units': units}
+        print(f"spectral_patch input: preprocess={spec['preprocess']}, source units={units}, "
+              f"width {spectra.shape[1]}")
+    else:
+        require_unit_norm(ds, "train_finetune")
+        spectra = ds.spectra.astype(np.float32)
     elements = downstream.get('elements_to_predict')  # None = all 60
     concentrations, element_names, sample_type_ids = extract_finetune_labels(
         ds.sample_table, elements=elements,
@@ -361,6 +374,7 @@ def _generate_libs_pipeline_labeled(
         'splits': splits,
         'split_strategy': strategy,
         'libs_dataset': ds,
+        'input_meta': input_meta,
     }
 
 
@@ -848,6 +862,12 @@ def main(args):
                     f"wavelength axis of {args.libs_data_config} differs from the pretrain run "
                     f"({pre_axis.get('source')}); spectral_patch encoders are rebuilt per axis"
                 )
+            pre_prep = (pre_info.get('spectral_patch') or {}).get('preprocess', 'none')
+            if pre_prep != spectral_meta.get('preprocess', 'none'):
+                raise ValueError(
+                    f"input preprocessing differs from the pretrain run ({pre_prep!r} vs "
+                    f"{spectral_meta.get('preprocess', 'none')!r})"
+                )
 
     if use_line_token and 'libs_dataset' in data:
         ds = data['libs_dataset']
@@ -1076,7 +1096,11 @@ def main(args):
         "line_features_path": line_features_path,
         "line_tokens_path": line_tokens_path,
         "spectra_cache_path": spectra_cache_path,
-        "spectral_patch": spectral_patch_run_info(spectral_meta, encoder, args.libs_data_config),
+        "spectral_patch": spectral_patch_run_info(
+            spectral_meta, encoder, args.libs_data_config,
+            input_spec=(data.get('input_meta') or {}).get('spec'),
+            input_units=(data.get('input_meta') or {}).get('units'),
+        ),
         "split_strategy": split_strategy,
         "model_params": encoder.num_parameters,
         "train_samples": len(train_labels),
