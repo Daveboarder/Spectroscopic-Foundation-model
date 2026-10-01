@@ -117,8 +117,14 @@ def _checkpoint_encoder_state(checkpoint_path: str) -> dict:
     return encoder_state
 
 
-def build_encoder(config: dict, run_info: dict, token_meta: dict) -> LIBSTransformer:
-    """Build a LIBSTransformer matching the fine-tuned encoder (no task heads)."""
+def build_encoder(
+    config: dict, run_info: dict, token_meta: dict, wavelength=None,
+) -> LIBSTransformer:
+    """Build a LIBSTransformer matching the fine-tuned encoder (no task heads).
+
+    ``spectral_patch`` encoders are rebuilt on ``wavelength`` (nm) when given
+    (e.g. the axis of a measured map), otherwise on the training axis recorded
+    in ``run_info.spectral_patch.axis``."""
     emb_type = run_info.get("embedding_type") or config["model"].get("embedding_type", "intensity")
     kwargs = dict(
         n_bins=config["data"]["n_bins"],
@@ -136,12 +142,39 @@ def build_encoder(config: dict, run_info: dict, token_meta: dict) -> LIBSTransfo
         kwargs["n_lines"] = token_meta["n_lines"]
         kwargs["line_token_meta"] = token_meta
         kwargs["n_mip_target_channels"] = int(config["model"].get("n_mip_target_channels", 2))
+    elif emb_type == "spectral_patch":
+        from models.spectral_patch_embedding import (
+            DEFAULT_PATCH_CFG,
+            spectral_meta_from_config,
+            wavelength_from_run_info,
+        )
+
+        info = run_info.get("spectral_patch") or {}
+        wl = wavelength_from_run_info(run_info) if wavelength is None else wavelength
+        # the window settings training used (recorded in run_info) win over the
+        # run's config.yaml, which is a copy of the fine-tune --config
+        recorded = {k: info[k] for k in DEFAULT_PATCH_CFG if k in info}
+        model_cfg = {
+            **config["model"],
+            "patch": {**(config["model"].get("patch") or {}), **recorded},
+        }
+        kwargs["spectral_meta"] = spectral_meta_from_config(
+            model_cfg, wl, n_segments=info.get("n_segments"),
+        )
+        kwargs["n_bins"] = len(wl)
     elif emb_type == "line_token":
         raise NotImplementedError(
             "line_token (runtime embedding) is not supported by this analyzer; "
             "use a line_token_linear run, or extend build_encoder with line_dict_meta."
         )
-    return LIBSTransformer(**kwargs)
+    model = LIBSTransformer(**kwargs)
+    if emb_type == "spectral_patch" and wavelength is None and info.get("n_tokens"):
+        if model.embedding.n_tokens != int(info["n_tokens"]):
+            raise ValueError(
+                f"rebuilt spectral_patch embedding has {model.embedding.n_tokens} windows, "
+                f"training had {info['n_tokens']}"
+            )
+    return model
 
 
 def prepare_data(config: dict, run_info: dict, args):

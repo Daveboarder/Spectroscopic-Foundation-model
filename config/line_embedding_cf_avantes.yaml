@@ -1,0 +1,61 @@
+# Line-token embedding for the 3-channel Avantes spectrometer of the 2022 LIBS
+# maps (Mar1A.h5: 188.7-689.1 nm, the first 13,213 pixels of the FireFly axis).
+# = config/line_embedding_cf.yaml with
+#   * wavelength_clip max 689.1 nm: lines above the last channel would only
+#     ever give invalid fits (230 of 959 lines in the LIGHTIGO dictionary);
+#   * te_range / reference plasma at the generator's core state
+#     (config/libs_data_minerals_avantes.yaml: Te1 12-13 kK, Ne1 ~3e17 cm^-3).
+#
+# Line-token embedding for the calibration-free (CF) quantification task:
+# isolation-filtered dictionary + per-spectrum Voigt fits on a linear baseline.
+# Used with --line_embedding_config and model.embedding_type: line_token_linear.
+#
+# Differences from config/line_embedding.yaml:
+#   * selection.mode: cf_isolated — only the elements of the REE-mineral table
+#     (REE_minerals_oxides.xlsx, those with lines in LIBS_data.db), each line
+#     scored for spectral isolation at a reference plasma against every line of
+#     every matrix element (weighted by its maximum concentration) plus ambient
+#     air (N, O, Ar); the curated mineral line list is always kept.
+#   * line_features.baseline: linear — Voigt + linear baseline (area channel
+#     unchanged); initial widths reflect the instrument profile.
+# theoretical_intensity uses the Kirchhoff-consistent thin-limit physics of
+# data/plasma_physics.py (per unit x_e·N·l); legacy N/C/l keys are not needed.
+
+line_dictionary:
+  db_path: external_data/Source/LIBS_data.db
+  te_range: [10000.0, 15000.0]   # K   (grid for the max-intensity channel)
+  ne_range: [1.0e17, 1.0e18]    # cm^-3
+  n_grid:
+    te: 10
+    ne: 10
+  ne_log_spaced: true
+  selection:
+    mode: cf_isolated
+    isolation_window_nm: 0.3          # ± window for interfering lines
+    max_interference_fraction: 0.3    # sum(I_j C_j) <= 0.3 * I_cand * C_cand (0.1 leaves only 88 lines in an Fe matrix)
+    reference_te: 12500               # K, plasma at which isolation is judged
+    reference_ne: 3.0e17              # cm^-3
+    ambient_elements: {N: 0.78, O: 0.21, Ar: 0.0093}  # LIBS in air: air number fractions as interferer weights
+    max_lines_per_species: 40
+    min_lines_per_species: 20         # fill from the best-scored non-isolated lines; isolation_score carries the quality
+    force_include: cf/data/cf_mineral_lines.tsv  # curated REE-mineral LIBS lines (air), flagged forced=1
+    target_elements: from_sample_matrix          # element columns of the matrix present in the DB
+    sample_matrix: external_data/Source/REE_minerals_oxides.xlsx  # Concentrations sheet (element wt%)
+    interferer_units: number          # matrix wt% -> number fractions for the weights
+    typical_concentration_floor: 1.0e-4
+  wavelength_clip:              # Avantes 3-channel span of Mar1A.h5 (188.68-689.07 nm)
+    min: 188.6
+    max: 689.1
+  use_wavelength_json_clip: false
+  cache_dir: external_data/cache
+
+line_features:
+  window_nm: 0.3
+  gamma_init: 0.02
+  sigma_init: 0.02
+  r2_min: 0.85
+  baseline: linear              # none | linear
+  max_delta_nm: 0.1             # fitted centre within ±0.1 nm of the DB wavelength (measured axis offset ≈ −0.04 nm)
+  max_fwhm_nm: 0.2              # reject fits broader than 0.2 nm (neighbour-locking / continuum humps)
+  workers: 22
+  cache_dir: external_data/cache

@@ -51,6 +51,8 @@ def _infer_embedding_type_from_state_dict(state_dict: dict, fallback: str = "int
         return "line_token"
     if any(k.startswith("embedding.intensity_projection.") for k in state_dict.keys()):
         return "intensity"
+    if any(k.startswith("embedding.patch_proj.") for k in state_dict.keys()):
+        return "spectral_patch"
     return fallback
 
 
@@ -637,6 +639,12 @@ def main(args):
     if not config_path.exists():
         raise ValueError(f"Config not found in run directory: {config_path}")
     config = load_config(str(config_path))
+    if config.get("model", {}).get("embedding_type") == "spectral_patch":
+        raise NotImplementedError(
+            "evaluate_model.py scores legacy 2048-bin intensity encoders only; evaluate "
+            "spectral_patch runs from run_info.yaml test_results or with "
+            "scripts/predict_mineral_map.py"
+        )
 
     # Output to evaluation subfolder with timestamp
     eval_name = datetime.now().strftime("eval_%Y-%m-%d_%H-%M-%S")

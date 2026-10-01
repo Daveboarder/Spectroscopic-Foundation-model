@@ -26,7 +26,7 @@ Checkpoints are **not interchangeable** between modes (different sequence length
 
 Offline preprocessing (reusable across training runs):
 
-1. **Line dictionary** (`data/line_dictionary.py`) — theoretical intensities over a Te×Ne grid from `LIBS_data_vacuum.db`; keep top 10% most intense lines per element (or all lines if element has <10) → `line_dict_*.h5`
+1. **Line dictionary** (`data/line_dictionary.py`) — theoretical intensities over a Te×Ne grid from `LIBS_data.db` (air wavelengths); keep top 10% most intense lines per element (or all lines if element has <10) → `line_dict_*.h5`
 2. **Line features** (`data/line_features.py`) — per-spectrum Voigt fit at each line centre → `line_features_*.h5` `[n_spectra, n_lines, 6]`
 3. **Line tokens** (`data/line_tokenization.py`) — merge dictionary + fits into one tensor per line → `line_tokens_*.h5` `[n_spectra, n_lines, 14]` (raw values + `feature_mean`/`feature_std` in attrs)
 

@@ -62,6 +62,35 @@ _VOIGT_NORM = 1.0 / (_SIGMA_FIT * np.sqrt(2 * np.pi))
 
 # Element-name filters (upstream conventions)
 _EXCLUDED_ELEMENTS = {"", "n", "r"}
+# LIBS_data.db (air wavelengths) also carries rows under pseudo-elements such as
+# "Al-II" / "Mn-II" plus "", "n", "r"; only plain chemical symbols are elements.
+_ELEMENT_SYMBOL_RE = re.compile(r"[A-Z][a-z]?")
+
+# Line DB whose cache keys predate the `line_db` key; other DBs (e.g. the air-wavelength
+# LIBS_data.db) are added to every spectra cache key so their caches never collide.
+LEGACY_LINE_DB = "LIBS_data_vacuum.db"
+
+
+def is_element_symbol(name: Any) -> bool:
+    """True for a plain chemical symbol ("Fe"), False for DB artefacts ("Al-II", "", "n")."""
+    s = str(name).strip() if name is not None else ""
+    return s not in _EXCLUDED_ELEMENTS and bool(_ELEMENT_SYMBOL_RE.fullmatch(s))
+
+
+_line_db_md5_cache: dict[tuple[str, int, int], str] = {}
+
+
+def line_db_cache_key(db_path: str) -> dict[str, str]:
+    """Cache-key entry identifying the line DB by name and content (edits to the DB file
+    invalidate caches); empty for the legacy vacuum DB so existing hashes stay valid."""
+    p = Path(db_path)
+    if p.name == LEGACY_LINE_DB:
+        return {}
+    st = p.stat()
+    sig = (str(p.resolve()), st.st_size, st.st_mtime_ns)
+    if sig not in _line_db_md5_cache:
+        _line_db_md5_cache[sig] = hashlib.md5(p.read_bytes()).hexdigest()[:12]
+    return {"line_db": p.name, "line_db_md5": _line_db_md5_cache[sig]}
 
 # Plasma-state columns written by data/two_zone_pipeline.py (physics_version 2).
 # They are metadata, never element concentrations. ``Te``/``Ne`` stay as the
@@ -140,6 +169,10 @@ def _load_partf(element: str, db_path: str):
                 gi_I.append(gi); Ei_I.append(Ei)
             elif ion_state == "II":
                 gi_II.append(gi); Ei_II.append(Ei)
+        if element == "H" and not gi_II:
+            # H II is a bare proton: U_II = 1. PartF_var has no level for it, and U_II = 0
+            # would make the Saha ratio vanish (hydrogen treated as fully neutral).
+            gi_II.append(1.0); Ei_II.append(0.0)
         _partf_cache[element] = (
             np.array(gi_I, dtype=np.float64),
             np.array(Ei_I, dtype=np.float64),
@@ -277,8 +310,17 @@ def _get_one_ccd_range(json_path: str, run_id: int, integration_phase: int, ccd_
 
 
 def load_wavelength(json_path: str, run_id: int = 1, integration_phase: int = 1) -> np.ndarray:
-    """Build the full LIBS wavelength axis by concatenating the two CCD ranges
-    of a VASKUT-style analysis JSON. Returns shape (N,) — used as n_bins."""
+    """Build the full LIBS wavelength axis. Returns shape (N,) — used as n_bins.
+
+    * ``*.json``: VASKUT-style analysis JSON, the two CCD ranges concatenated.
+    * ``*.h5`` / ``*.hdf5``: LIGHTIGO HDF5 file, ``measurements/<first>/libs/calibration``
+      (14,905 pixels, 188.6–859.1 nm, five channels, non-monotonic at the seams).
+      The YAML key stays ``paths.wavelength_json`` for backward compatibility.
+    """
+    if str(json_path).lower().endswith((".h5", ".hdf5")):
+        from data.efficiency_correction import load_lightigo_axis  # lazy: h5py
+
+        return load_lightigo_axis(json_path)
     w1 = _get_one_ccd_range(json_path, run_id, integration_phase, 1)
     w2 = _get_one_ccd_range(json_path, run_id, integration_phase, 2)
     return np.concatenate([w1, w2])
@@ -291,12 +333,7 @@ def _db_elements(db_path: str) -> set[str]:
     with sqlite3.connect(db_path) as conn:
         cur = conn.cursor()
         cur.execute("SELECT DISTINCT Elem_name FROM QuantParam")
-        return {
-            str(r[0]).strip()
-            for r in cur.fetchall()
-            if r[0] is not None and str(r[0]).strip() not in _EXCLUDED_ELEMENTS
-            and "-II" not in str(r[0])
-        }
+        return {str(r[0]).strip() for r in cur.fetchall() if is_element_symbol(r[0])}
 
 
 def _normalize_sample_id(name: str, row: int) -> str:
@@ -487,8 +524,12 @@ def generate_synthetic_spectra(
 # ─────────────────────────────────────────────────────────────────────────────
 # HDF5 cache helpers (shared by synthetic and measured datasets)
 # ─────────────────────────────────────────────────────────────────────────────
-def save_spectra_cache(table: pd.DataFrame, spectra: np.ndarray, path: str) -> None:
+def save_spectra_cache(
+    table: pd.DataFrame, spectra: np.ndarray, path: str, units: str = "unit_norm"
+) -> None:
+    """``units``: 'unit_norm' (default) or 'full_well' (fraction of the detector full well)."""
     with h5py.File(path, "w") as f:
+        f.attrs["units"] = units
         f.create_dataset("spectra", data=spectra, compression="gzip")
         grp = f.create_group("sample_table")
         grp.attrs["columns"] = json.dumps(list(table.columns))
@@ -501,8 +542,15 @@ def save_spectra_cache(table: pd.DataFrame, spectra: np.ndarray, path: str) -> N
                 grp.create_dataset(col, data=vals)
 
 
-def load_spectra_cache(path: str) -> tuple[pd.DataFrame, np.ndarray]:
+def load_spectra_cache(
+    path: str, expected_units: str | None = None
+) -> tuple[pd.DataFrame, np.ndarray]:
+    """Caches written before the units attribute are 'unit_norm'."""
     with h5py.File(path, "r") as f:
+        units = f.attrs.get("units", "unit_norm")
+        units = units.decode() if isinstance(units, bytes) else str(units)
+        if expected_units is not None and units != expected_units:
+            raise ValueError(f"{path} holds {units!r} spectra, expected {expected_units!r}")
         # read_direct converts chunk by chunk, so a float64 cache (written
         # before the generator switched to float32) never costs 2x the RAM.
         ds = f["spectra"]
@@ -525,7 +573,11 @@ def load_spectra_cache(path: str) -> tuple[pd.DataFrame, np.ndarray]:
 class SyntheticLIBSDataset(Dataset):
     """PyTorch dataset that materialises synthetic LIBS spectra in __init__
     (so .spectra / .sample_table are available as numpy arrays for downstream
-    train/val splitting). Spectra are cached to HDF5 keyed by config hash."""
+    train/val splitting). Spectra are cached to HDF5 keyed by config hash.
+    ``units`` is 'unit_norm' here; the physics-v2 generator can keep full-well units."""
+
+    units = "unit_norm"
+    full_well_counts = None
 
     def __init__(
         self,
@@ -570,6 +622,7 @@ class SyntheticLIBSDataset(Dataset):
             "wavelength_first": float(self.wavelength[0]),
             "wavelength_last": float(self.wavelength[-1]),
             "seed": self.seed,
+            **line_db_cache_key(self.db_path),
         }
         return hashlib.md5(json.dumps(cfg, sort_keys=True, default=str).encode()).hexdigest()[:12]
 
@@ -577,10 +630,10 @@ class SyntheticLIBSDataset(Dataset):
         return os.path.join(self.cache_dir, f"synthetic_cache_{self.cache_key}.h5")
 
     def _save_cache(self, table: pd.DataFrame, spectra: np.ndarray, path: str):
-        save_spectra_cache(table, spectra, path)
+        save_spectra_cache(table, spectra, path, units=self.units)
 
     def _load_cache(self, path: str) -> tuple[pd.DataFrame, np.ndarray]:
-        return load_spectra_cache(path)
+        return load_spectra_cache(path, expected_units=self.units)
 
     def _build(self) -> tuple[pd.DataFrame, np.ndarray]:
         cache = self._cache_path()

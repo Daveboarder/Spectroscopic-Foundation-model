@@ -59,7 +59,7 @@ __all__ = [
     "saha_thermal_factor", "saha_ratio", "stage_fractions",
     "line_absorption_int", "line_emissivity_int", "line_source_function",
     "planck_lambda", "doppler_sigma_nm", "voigt_profile", "voigt_peak",
-    "voigt_fwhm", "line_centre_optical_depth", "curve_of_growth_factor",
+    "voigt_fwhm", "balmer_stark_hwhm_nm", "line_centre_optical_depth", "curve_of_growth_factor",
     "number_density_from_ne", "one_zone_transfer", "two_zone_transfer",
     "LineSet", "line_set_for_element", "thin_line_intensities",
 ]
@@ -177,6 +177,26 @@ def voigt_fwhm(sigma_nm, gamma_nm):
     fl = 2.0 * np.asarray(gamma_nm, dtype=np.float64)
     fg = 2.0 * np.asarray(sigma_nm, dtype=np.float64) * np.sqrt(2.0 * np.log(2.0))
     return 0.5346 * fl + np.sqrt(0.2166 * fl ** 2 + fg ** 2)
+
+
+# Gigosos, González & Cardeñoso, Spectrochim. Acta B 58 (2003) 1489 (computer-simulated
+# Stark profiles, ion dynamics included): Balmer FWHM = a * (Ne / 1e17 cm^-3)^b nm,
+# nearly independent of T around 1e4 K.  n_upper: (a [nm], b).
+BALMER_STARK_FWHM = {3: (1.098, 0.67903), 4: (4.800, 0.68116)}
+H_IONISATION_EV = 13.598
+BALMER_LOWER_EV = 10.199  # E(n = 2) of H I
+
+
+def balmer_stark_hwhm_nm(Ek_eV, Ne):
+    """Lorentzian HWHM [nm] of H I Balmer lines (lower level n = 2) at electron density
+    ``Ne`` [cm^-3]: half the Gigosos et al. (2003) FWHM.  The upper level is taken from
+    ``Ek_eV`` (H alpha: n = 3, H beta: n = 4); lines with n >= 5 use the H beta fit,
+    an underestimate for H gamma and higher (weak lines here)."""
+    Ek = np.asarray(Ek_eV, dtype=np.float64)
+    n_up = np.rint(1.0 / np.sqrt(np.clip(1.0 - Ek / H_IONISATION_EV, 1e-6, None)))
+    a = np.where(n_up <= 3, BALMER_STARK_FWHM[3][0], BALMER_STARK_FWHM[4][0])
+    b = np.where(n_up <= 3, BALMER_STARK_FWHM[3][1], BALMER_STARK_FWHM[4][1])
+    return 0.5 * a * (float(Ne) / 1e17) ** b
 
 
 def line_centre_optical_depth(kappa_int, sigma_nm, gamma_nm, l_cm):

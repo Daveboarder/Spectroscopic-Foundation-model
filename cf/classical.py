@@ -26,6 +26,8 @@ import pandas as pd
 from data.line_tokenization import atomic_number, ion_binary
 
 CF_OES_54_TSV = Path(__file__).resolve().parent / "data" / "cf_oes_lines_54.tsv"
+# REE-mineral LIBS-in-air list (air wavelengths, LIBS_data.db values); same column layout.
+CF_MINERAL_TSV = Path(__file__).resolve().parent / "data" / "cf_mineral_lines.tsv"
 
 # token channels (data/line_tokenization.py)
 _CH_WL, _CH_Z, _CH_ION, _CH_AREA, _CH_R2 = 0, 7, 8, 9, 11

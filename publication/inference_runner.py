@@ -32,7 +32,7 @@ from training.finetune import LIBSFinetuneModule
 from utils.run_manager import RunManager
 
 CF_TASK = "cf_quantification"
-DEFAULT_DB_PATH = "external_data/Source/LIBS_data_vacuum.db"
+DEFAULT_DB_PATH = "external_data/Source/LIBS_data.db"
 DEFAULT_LOD_CONFIG = "config/element_lod.yaml"
 
 
@@ -361,10 +361,16 @@ class FinetuneInferenceRunner:
             self._lod = torch.from_numpy(lod)
         return self._lod
 
-    def finetune_checkpoint(self) -> Path:
-        best = self.run_dir / "checkpoints" / "best.ckpt"
-        if best.is_file():
-            return best
+    def finetune_checkpoint(self, prefer: str = "best") -> Path:
+        """best.ckpt (default; selected on the run's validation metric) or, with
+        ``prefer='last'``, last.ckpt; falls back to the RunManager order."""
+        if prefer not in ("best", "last"):
+            raise ValueError(f"prefer must be best|last, got {prefer!r}")
+        chosen = self.run_dir / "checkpoints" / f"{prefer}.ckpt"
+        if chosen.is_file():
+            return chosen
+        if prefer == "last":
+            raise FileNotFoundError(f"no last.ckpt in {self.run_dir}")
         ckpt = RunManager.from_existing_run(str(self.run_dir)).get_checkpoint_for_mode("finetune")
         if ckpt is None:
             raise FileNotFoundError(f"no checkpoint in {self.run_dir}")

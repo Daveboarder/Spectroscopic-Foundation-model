@@ -1,0 +1,58 @@
+# Smoke variant of config/config_libs_patch_4090.yaml: tiny trunk, 2 epochs.
+#   uv run python train_pretrain.py --config config/config_libs_patch_smoke.yaml \
+#     --libs_data_config config/libs_data_minerals_avantes_smoke.yaml
+#   uv run python train_finetune.py --config config/config_libs_patch_smoke.yaml \
+#     --libs_data_config config/libs_data_minerals_avantes_smoke.yaml \
+#     --pretrain_run_dir runs/pretrain_<ts>_... --task classification --pool cls_mean
+
+data:
+  n_bins: 2048           # overridden by the wavelength axis length
+  n_classes: 5           # overridden from libs_data downstream settings
+  synthetic:
+    val_fraction: 0.2
+
+model:
+  embedding_type: spectral_patch
+  d_model: 32
+  n_heads: 2
+  n_layers: 1
+  d_ff: 64
+  dropout: 0.0
+  max_seq_len: 8192      # unused by spectral_patch
+  patch:
+    window_nm: 1.0
+    stride_nm: 0.5
+    n_samples: 48
+    input_scale: 1.0e-2
+    saturation_level: 0.999
+    min_saturated_px: 3
+    pe_scale: 3000.0
+    pe_wl_min: 180.0
+    pe_wl_max: 900.0
+
+pretrain:
+  loss: mse
+  mask_ratio: 0.3
+  mask_span_tokens: 3
+  batch_size: 8
+  epochs: 2
+  learning_rate: 1.0e-4
+  weight_decay: 0.01
+  warmup_epochs: 1
+  min_lr: 1.0e-6
+
+finetune:
+  batch_size: 8
+  epochs: 2
+  learning_rate: 1.0e-3   # 5e-5 underfits: minerals_avantes classification 79 -> 99.6 % (line tokens), 44.5 -> 98.6 % (spectral_patch)
+  weight_decay: 0.01
+  freeze_encoder: false
+
+logging:
+  logger: "tensorboard"
+  log_every_n_steps: 1
+  val_check_interval: 1.0
+
+device:
+  accelerator: "gpu"
+  precision: "32"

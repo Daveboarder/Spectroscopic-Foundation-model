@@ -27,6 +27,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).parent))
 
 from data.synthetic_generator import SyntheticLIBSGenerator
+from data.canonical import patch_input, require_unit_norm, resolve_spec
 from data.libs_pipeline import build_dataset_from_config
 from data.line_embedding_pipeline import (
     prepare_line_token_assets,
@@ -34,6 +35,7 @@ from data.line_embedding_pipeline import (
 )
 from data.discretization import build_discretizer_from_config
 from models.libs_transformer import LIBSTransformer
+from models.spectral_patch_embedding import spectral_meta_from_config, spectral_patch_run_info
 from training.pretrain import LIBSPretrainModule, PretrainDataModule
 from utils.run_manager import RunManager
 
@@ -115,18 +117,33 @@ def _generate_legacy_synthetic(config: dict, seed: int):
     return train_spectra, val_spectra
 
 
-def _generate_libs_pipeline(config: dict, libs_config_path: str, seed: int):
+def _generate_libs_pipeline(
+    config: dict, libs_config_path: str, seed: int, return_wavelength: bool = False,
+):
     """Realistic physics-based synthesis (Daveboarder/Element_Identification heritage).
 
     The full dataset is materialised once (cached to HDF5), then split into
     train/val by `data.synthetic.val_fraction` (default 0.1). n_bins is
-    overridden in-place to match the actual wavelength array length."""
+    overridden in-place to match the actual wavelength array length. With
+    ``return_wavelength`` (spectral_patch embedding) the spectra are the model input
+    of data.canonical.patch_input for ``model.patch.preprocess``, and the spectrometer
+    axis [nm] plus {spec, units} of that input are returned as third and fourth items."""
     print(f"Generating LIBS-pipeline data from {libs_config_path}...")
     libs_cfg = yaml.safe_load(open(libs_config_path))
     libs_cfg.setdefault('generation', {})['seed'] = seed
 
     ds = build_dataset_from_config(libs_cfg)
-    spectra = ds.spectra.astype(np.float32)
+    input_meta = None
+    if return_wavelength:
+        units = getattr(ds, 'units', 'unit_norm')
+        spec = resolve_spec(config['model'], libs_cfg)
+        spectra = patch_input(ds.spectra, ds.wavelength, units, spec)
+        input_meta = {'spec': spec, 'units': units}
+        print(f"spectral_patch input: preprocess={spec['preprocess']}, source units={units}, "
+              f"width {spectra.shape[1]}")
+    else:
+        require_unit_norm(ds, "train_pretrain")
+        spectra = ds.spectra.astype(np.float32)
     if spectra.size == 0:
         raise RuntimeError("LIBS pipeline produced no spectra — check sample types / DB.")
 
@@ -142,6 +159,9 @@ def _generate_libs_pipeline(config: dict, libs_config_path: str, seed: int):
     perm = rng.permutation(len(spectra))
     n_val = max(1, int(len(spectra) * val_frac))
     val_idx, train_idx = perm[:n_val], perm[n_val:]
+    if return_wavelength:
+        wl = np.asarray(ds.wavelength, dtype=np.float64)
+        return spectra[train_idx], spectra[val_idx], wl, input_meta
     return spectra[train_idx], spectra[val_idx]
 
 
@@ -158,6 +178,7 @@ def create_model(
     config: dict,
     line_dict_meta: dict | None = None,
     line_token_meta: dict | None = None,
+    spectral_meta: dict | None = None,
 ) -> LIBSTransformer:
     emb_type = config['model'].get('embedding_type', 'intensity')
     kwargs = dict(
@@ -180,6 +201,8 @@ def create_model(
         kwargs['n_mip_target_channels'] = int(
             config['model'].get('n_mip_target_channels', 2)
         )
+    if emb_type == 'spectral_patch':
+        kwargs['spectral_meta'] = spectral_meta
     kwargs['mip_loss_type'] = pretrain_loss_type(config)
     kwargs['num_intensity_bins'] = int(config['model'].get('num_intensity_bins', 256))
     kwargs['num_fwhm_bins'] = int(config['model'].get('num_fwhm_bins', 100))
@@ -196,6 +219,7 @@ def _prepare_line_token_libs(
     libs_cfg = yaml.safe_load(open(libs_config_path))
     libs_cfg.setdefault('generation', {})['seed'] = seed
     ds = build_dataset_from_config(libs_cfg)
+    require_unit_norm(ds, "line-token assets")
     if len(ds) == 0:
         raise RuntimeError("LIBS pipeline produced no spectra.")
     meta = prepare_line_token_assets(
@@ -225,6 +249,7 @@ def _prepare_line_tokens_linear_libs(
     libs_cfg = yaml.safe_load(open(libs_config_path))
     libs_cfg.setdefault('generation', {})['seed'] = seed
     ds = build_dataset_from_config(libs_cfg)
+    require_unit_norm(ds, "line-token assets")
     if len(ds) == 0:
         raise RuntimeError("LIBS pipeline produced no spectra.")
     meta = prepare_line_tokens_assets(
@@ -267,6 +292,8 @@ def main(args):
     line_features_path = None
     line_tokens_path = None
     train_spectra = val_spectra = None
+    spectral_meta = None
+    input_meta = None
 
     requested_emb = config['model'].get('embedding_type', 'intensity')
     # Default behaviour when --line_embedding_config is provided but the
@@ -281,6 +308,12 @@ def main(args):
             raise ValueError(f"embedding_type={requested_emb!r} requires --line_embedding_config")
         if not args.libs_data_config:
             raise ValueError(f"embedding_type={requested_emb!r} requires --libs_data_config")
+    if requested_emb == 'spectral_patch':
+        if args.line_embedding_config:
+            raise ValueError("embedding_type='spectral_patch' reads raw spectra; "
+                             "do not pass --line_embedding_config")
+        if not args.libs_data_config:
+            raise ValueError("embedding_type='spectral_patch' requires --libs_data_config")
 
     if requested_emb == 'line_token':
         line_dict_meta, train_indices, val_indices = _prepare_line_token_libs(
@@ -294,6 +327,13 @@ def main(args):
         )
         line_tokens_path = line_token_meta['line_tokens_path']
         print(f"Train: {len(train_indices)} | Val: {len(val_indices)} | n_lines: {config['data']['n_bins']}")
+    elif requested_emb == 'spectral_patch':
+        train_spectra, val_spectra, wavelength, input_meta = _generate_libs_pipeline(
+            config, args.libs_data_config, args.seed, return_wavelength=True,
+        )
+        spectral_meta = spectral_meta_from_config(config['model'], wavelength)
+        print(f"Train: {len(train_spectra)} samples | Val: {len(val_spectra)} samples | "
+              f"n_bins: {train_spectra.shape[1]} (spectral_patch)")
     else:
         train_spectra, val_spectra = generate_data(
             config, seed=args.seed, libs_config_path=args.libs_data_config,
@@ -308,7 +348,10 @@ def main(args):
         np.save(data_dir / 'val_spectra.npy', val_spectra)
         print(f"Saved data to {data_dir}")
 
-    model = create_model(config, line_dict_meta=line_dict_meta, line_token_meta=line_token_meta)
+    model = create_model(
+        config, line_dict_meta=line_dict_meta, line_token_meta=line_token_meta,
+        spectral_meta=spectral_meta,
+    )
 
     loss_type = pretrain_loss_type(config)
     intensity_disc, fwhm_disc = build_pretrain_discretizers(config)
@@ -326,6 +369,8 @@ def main(args):
         loss_type=loss_type,
         intensity_discretizer=intensity_disc,
         fwhm_discretizer=fwhm_disc,
+        mask_ratio=config['pretrain']['mask_ratio'],
+        mask_span_tokens=int(config['pretrain'].get('mask_span_tokens', 1)),
     )
 
     # Masking config
@@ -341,6 +386,9 @@ def main(args):
     print(f"  Block sizes: {block_sizes}")
     print(f"  Mask ratio: {config['pretrain']['mask_ratio']}")
     print(f"  Peak-biased: {peak_bias_enabled} (ratio: {peak_bias_ratio}, threshold: {peak_threshold})")
+    if spectral_meta is not None:
+        print(f"  spectral_patch: {model.embedding.n_tokens} windows, span "
+              f"{config['pretrain'].get('mask_span_tokens', 1)} windows (masked on the GPU)")
 
     data_module = PretrainDataModule(
         train_spectra=train_spectra,
@@ -357,6 +405,7 @@ def main(args):
         line_tokens_path=line_tokens_path,
         train_indices=train_indices,
         val_indices=val_indices,
+        spectral_patch=spectral_meta is not None,
     )
 
     # Logger
@@ -442,6 +491,11 @@ def main(args):
         "line_features_path": line_features_path,
         "line_tokens_path": line_tokens_path,
         "line_embedding_config": args.line_embedding_config,
+        "libs_data_config": args.libs_data_config,
+        "spectral_patch": spectral_patch_run_info(
+            spectral_meta, model, args.libs_data_config,
+            input_spec=(input_meta or {}).get('spec'), input_units=(input_meta or {}).get('units'),
+        ),
         "batch_size": config['pretrain']['batch_size'],
         "epochs": config['pretrain']['epochs'],
         "mask_ratio": config['pretrain']['mask_ratio'],
@@ -480,8 +534,9 @@ def main(args):
     print(f"Run directory: {run_mgr.run_dir}")
     if checkpoint_callback.best_model_score:
         print(f"Best val loss: {checkpoint_callback.best_model_score:.4f}")
-    print(f"\nTo evaluate:")
-    print(f"  uv run python evaluate_model.py --run_dir {run_mgr.run_dir}")
+    if spectral_meta is None:  # evaluate_model.py handles the legacy intensity encoders only
+        print(f"\nTo evaluate:")
+        print(f"  uv run python evaluate_model.py --run_dir {run_mgr.run_dir}")
 
 
 if __name__ == "__main__":

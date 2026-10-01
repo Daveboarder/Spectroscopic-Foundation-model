@@ -3,17 +3,18 @@
 # Used with --line_embedding_config and model.embedding_type: line_token_linear.
 #
 # Differences from config/line_embedding.yaml:
-#   * selection.mode: cf_isolated — only the sample-matrix elements (38), each
-#     line scored for spectral isolation at a reference plasma against every
-#     line of every matrix element (weighted by its maximum matrix
-#     concentration) plus ambient Ar; the curated CF_OES list is always kept.
+#   * selection.mode: cf_isolated — only the elements of the REE-mineral table
+#     (REE_minerals_oxides.xlsx, those with lines in LIBS_data.db), each line
+#     scored for spectral isolation at a reference plasma against every line of
+#     every matrix element (weighted by its maximum concentration) plus ambient
+#     air (N, O, Ar); the curated mineral line list is always kept.
 #   * line_features.baseline: linear — Voigt + linear baseline (area channel
 #     unchanged); initial widths reflect the instrument profile.
 # theoretical_intensity uses the Kirchhoff-consistent thin-limit physics of
 # data/plasma_physics.py (per unit x_e·N·l); legacy N/C/l keys are not needed.
 
 line_dictionary:
-  db_path: external_data/Source/LIBS_data_vacuum.db
+  db_path: external_data/Source/LIBS_data.db
   te_range: [6500.0, 11000.0]   # K   (grid for the max-intensity channel)
   ne_range: [1.0e17, 5.0e17]    # cm^-3
   n_grid:
@@ -26,20 +27,18 @@ line_dictionary:
     max_interference_fraction: 0.3    # sum(I_j C_j) <= 0.3 * I_cand * C_cand (0.1 leaves only 88 lines in an Fe matrix)
     reference_te: 10000               # K, plasma at which isolation is judged
     reference_ne: 1.0e17              # cm^-3
-    ambient_elements: {Ar: 1.0}       # spark in argon: Ar lines interfere at weight 1
+    ambient_elements: {N: 0.78, O: 0.21, Ar: 0.0093}  # LIBS in air: air number fractions as interferer weights
     max_lines_per_species: 40
     min_lines_per_species: 20         # fill from the best-scored non-isolated lines; isolation_score carries the quality
-    force_include: cf/data/cf_oes_lines_54.tsv   # curated CF_OES lines, flagged forced=1
+    force_include: cf/data/cf_mineral_lines.tsv  # curated REE-mineral LIBS lines (air), flagged forced=1
     target_elements: from_sample_matrix          # element columns of the matrix present in the DB
-    sample_matrix: external_data/Source/Samples_Fe_matrix.xlsx
+    sample_matrix: external_data/Source/REE_minerals_oxides.xlsx  # Concentrations sheet (element wt%)
     interferer_units: number          # matrix wt% -> number fractions for the weights
     typical_concentration_floor: 1.0e-4
-  wavelength_clip:              # null = use full DB range; set min/max to spectrometer span
-    min: null
-    max: null
-  # Optional: clip to VASKUT axis when libs_data paths are set
-  wavelength_json: external_data/Data/VASKUT K8.json
-  use_wavelength_json_clip: true
+  wavelength_clip:              # LIGHTIGO spectrometer span (halite_4mJ.h5 calibration: 188.64-859.14 nm)
+    min: 188.6
+    max: 859.2
+  use_wavelength_json_clip: false
   cache_dir: external_data/cache
 
 line_features:

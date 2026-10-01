@@ -12,6 +12,7 @@ from typing import Dict, Optional, Tuple, Union
 
 from .positional_encoding import SinusoidalPositionalEncoding
 from .line_token_embedding import LineTokenEmbedding, LinearLineTokenEmbedding
+from .spectral_patch_embedding import SpectralPatchEmbedding
 from .heads import MaskedBinIntensityHead, MaskedLineFeatureHead
 
 
@@ -207,6 +208,10 @@ class LIBSTransformer(nn.Module):
         d_ff: Feed-forward dimension
         dropout: Dropout rate
         n_classes: Number of classes for downstream classification
+        spectral_meta: ``embedding_type='spectral_patch'`` only: {wavelength [n_px] nm,
+            window_nm, stride_nm, n_samples, input_scale, saturation_level,
+            min_saturated_px, pe_scale, pe_wl_min, pe_wl_max[, n_segments]}
+            (``models.spectral_patch_embedding.spectral_meta_from_config``)
     """
     
     def __init__(
@@ -228,6 +233,7 @@ class LIBSTransformer(nn.Module):
         mip_loss_type: str = "mse",
         num_intensity_bins: int = 256,
         num_fwhm_bins: int = 100,
+        spectral_meta: Optional[dict] = None,
     ):
         super().__init__()
         
@@ -267,6 +273,21 @@ class LIBSTransformer(nn.Module):
             )
             self.n_lines = int(line_token_meta["n_lines"])
             self.n_features = int(line_token_meta["n_features"])
+        elif embedding_type == "spectral_patch":
+            if spectral_meta is None or spectral_meta.get("wavelength") is None:
+                raise ValueError(
+                    "embedding_type='spectral_patch' requires spectral_meta with the "
+                    "wavelength axis (spectral_meta_from_config)"
+                )
+            meta = {k: v for k, v in spectral_meta.items() if k != "wavelength"}
+            self.embedding = SpectralPatchEmbedding(
+                d_model=d_model,
+                wavelength=spectral_meta["wavelength"],
+                dropout=dropout,
+                **meta,
+            )
+            self.n_bins = self.embedding.n_px
+            self.n_tokens = self.embedding.n_tokens
         else:
             self.embedding = SpectralEmbedding(
                 d_model=d_model,
@@ -289,7 +310,17 @@ class LIBSTransformer(nn.Module):
         self.final_norm = nn.LayerNorm(d_model)
         
         # Masked prediction head (regression or classification)
-        if mip_loss_type == "classification":
+        if embedding_type == "spectral_patch":
+            if mip_loss_type != "mse":
+                raise ValueError("spectral_patch supports pretrain.loss 'mse' only")
+            # reconstructs the transformed samples of each masked window
+            self.mip_head = nn.Sequential(
+                nn.Linear(d_model, d_model),
+                nn.GELU(),
+                nn.LayerNorm(d_model),
+                nn.Linear(d_model, self.embedding.n_samples),
+            )
+        elif mip_loss_type == "classification":
             if embedding_type in ("line_token", "line_token_linear"):
                 self.mip_head = MaskedLineFeatureHead(
                     d_model=d_model,
@@ -342,8 +373,10 @@ class LIBSTransformer(nn.Module):
         Forward pass through the transformer.
         
         Args:
-            x: [B, n_bins] spectrum (intensity mode) or dict with 'line_features' [B, L, 6]
-            mask: Optional boolean mask (intensity mode only)
+            x: [B, n_bins] spectrum (intensity / spectral_patch mode; a dict with
+               'spectrum' also works for spectral_patch) or dict with 'line_features' [B, L, 6]
+            mask: Optional boolean mask: [B, n_bins] (intensity mode) or [B, T] masked
+               windows (spectral_patch mode)
             key_padding_mask: Optional [B, seq_len] True = ignore (line mode; from embedding)
             return_attention: Whether to return attention weights
             
@@ -367,6 +400,9 @@ class LIBSTransformer(nn.Module):
             hidden, kpm = self.embedding(tokens, fit_valid=fit_valid)
             if key_padding_mask is None:
                 key_padding_mask = kpm
+        elif self.embedding_type == "spectral_patch":
+            spectrum = x["spectrum"] if isinstance(x, dict) else x
+            hidden = self.embedding(spectrum, token_mask=mask)
         else:
             hidden = self.embedding(x, mask=mask)
         
@@ -401,6 +437,8 @@ class LIBSTransformer(nn.Module):
             mip_out = self.mip_head(sequence_embeddings)
             if self.embedding_type in ("line_token", "line_token_linear"):
                 result['mip_predictions'] = mip_out  # [B, L, n_target_channels]
+            elif self.embedding_type == "spectral_patch":
+                result['mip_predictions'] = mip_out  # [B, T, n_samples]
             else:
                 result['mip_predictions'] = mip_out.squeeze(-1)  # [B, n_bins]
         if key_padding_mask is not None:

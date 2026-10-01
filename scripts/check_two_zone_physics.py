@@ -74,7 +74,7 @@ from data.two_zone_pipeline import (
 )
 from data.two_zone_pipeline import _number_density_rows
 
-DB_DEFAULT = "external_data/Source/LIBS_data_vacuum.db"
+DB_DEFAULT = "external_data/Source/LIBS_data.db"
 
 
 class Report:

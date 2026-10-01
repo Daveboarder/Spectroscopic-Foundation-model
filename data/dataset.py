@@ -54,6 +54,14 @@ class LIBSDataset(Dataset):
         return torch.from_numpy(spectrum)
 
 
+class SpectrumDataset(LIBSDataset):
+    """Unlabelled spectra as ``{'spectrum': [n_bins]}`` batches (spectral_patch
+    pretraining: the window masks are drawn on the GPU by LIBSPretrainModule)."""
+
+    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+        return {'spectrum': super().__getitem__(idx)}
+
+
 class MaskedLIBSDataset(Dataset):
     """
     Dataset with advanced masking for self-supervised pre-training.

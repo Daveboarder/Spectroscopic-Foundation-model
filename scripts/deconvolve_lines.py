@@ -107,7 +107,7 @@ def main() -> None:
     ap.add_argument("--T", type=float, default=11000.0)
     ap.add_argument("--log10_Ne", type=float, default=17.5)
     ap.add_argument("--wavelength_json", default="external_data/Data/VASKUT K8.json")
-    ap.add_argument("--db", default="external_data/Source/LIBS_data_vacuum.db")
+    ap.add_argument("--db", default="external_data/Source/LIBS_data.db")
     ap.add_argument("--window_nm", type=float, default=0.30)
     ap.add_argument("--margin_nm", type=float, default=0.60)
     ap.add_argument("--instrument_fwhm_nm", type=float, default=0.047)

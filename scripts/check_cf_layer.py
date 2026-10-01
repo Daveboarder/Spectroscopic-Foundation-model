@@ -50,7 +50,7 @@ from data.plasma_physics import (                                    # noqa: E40
 )
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_DB = ROOT / "external_data" / "Source" / "LIBS_data_vacuum.db"
+DEFAULT_DB = ROOT / "external_data" / "Source" / "LIBS_data.db"
 DEFAULT_MEASURED = ROOT / "external_data" / "cache" / "measured_cache_942cec6d2499.h5"
 DEFAULT_TOKENS = ROOT / "external_data" / "cache" / "line_tokens_2a03a3539d56.h5"
 FALLBACK_ELEMENTS = [

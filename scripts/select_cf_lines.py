@@ -152,7 +152,7 @@ def main() -> None:
     ap.add_argument("--deconv", default=None, help="deconv_*.h5 (scripts/deconvolve_lines.py)")
     ap.add_argument("--rescue", default="Fe", help="elements whose blended lines are rescued: "
                     "comma list or 'all'")
-    ap.add_argument("--db", default="external_data/Source/LIBS_data_vacuum.db")
+    ap.add_argument("--db", default="external_data/Source/LIBS_data.db")
     ap.add_argument("--element_lod_config", default="config/element_lod.yaml")
     ap.add_argument("--iso_min", type=float, default=0.3)
     ap.add_argument("--r2_min", type=float, default=0.9)
